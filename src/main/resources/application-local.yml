@@ -1,0 +1,20 @@
+# AI
+langchain4j:
+  open-ai:
+    chat-model:
+      base-url: https://api.deepseek.com
+      api-key: sk-7ac3210aff0248fbaae5c6d0ebc99a9e
+      model-name: deepseek-v4-flash
+      log-requests: true
+      log-responses: true
+      max-tokens: 8192
+      response-format: json-object
+      #注意 流式输出不支持 response-format: json-object
+    streaming-chat-model:
+      base-url: https://api.deepseek.com
+      api-key: sk-7ac3210aff0248fbaae5c6d0ebc99a9e
+      model-name: deepseek-v4-flash
+      max-tokens: 8192
+      log-requests: true
+      log-responses: true
+
