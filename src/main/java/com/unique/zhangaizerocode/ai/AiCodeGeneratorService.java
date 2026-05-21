@@ -3,6 +3,8 @@ package com.unique.zhangaizerocode.ai;
 import com.unique.zhangaizerocode.ai.model.HtmlCodeResult;
 import com.unique.zhangaizerocode.ai.model.MultiFileCodeResult;
 import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
 import reactor.core.publisher.Flux;
 //定义ai方法
 public interface AiCodeGeneratorService {
@@ -43,4 +45,7 @@ public interface AiCodeGeneratorService {
     @SystemMessage(fromResource = "prompt/codegen-multi-file-system-prompt.txt")
     Flux<String> generateMultiFileCodeStream(String userMessage);
 
+    @SystemMessage(fromResource = "prompt/app-name-system-prompt.txt")
+    @UserMessage("用户的应用描述：{{initPrompt}}")
+    String generateAppName(@V("initPrompt") String initPrompt);
 }

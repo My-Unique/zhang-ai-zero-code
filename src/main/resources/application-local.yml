@@ -3,7 +3,7 @@ langchain4j:
   open-ai:
     chat-model:
       base-url: https://api.deepseek.com
-      api-key: sk-7ac3210aff0248fbaae5c6d0ebc99a9e
+      api-key: sk-3018db2c56fa45f0a0bc234e150f4eea
       model-name: deepseek-v4-flash
       log-requests: true
       log-responses: true
@@ -12,7 +12,7 @@ langchain4j:
       #注意 流式输出不支持 response-format: json-object
     streaming-chat-model:
       base-url: https://api.deepseek.com
-      api-key: sk-7ac3210aff0248fbaae5c6d0ebc99a9e
+      api-key: sk-3018db2c56fa45f0a0bc234e150f4eea
       model-name: deepseek-v4-flash
       max-tokens: 8192
       log-requests: true

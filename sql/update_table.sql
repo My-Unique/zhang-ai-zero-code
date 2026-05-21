@@ -1,0 +1,2 @@
+ALTER TABLE app ADD COLUMN currentVersionId BIGINT COMMENT '当前版本 id';
+ALTER TABLE app ADD COLUMN versionNo INT DEFAULT 0 COMMENT '当前版本号';

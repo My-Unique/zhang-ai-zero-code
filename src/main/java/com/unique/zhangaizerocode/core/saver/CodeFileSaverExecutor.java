@@ -15,10 +15,10 @@ public class CodeFileSaverExecutor {
 
     private static final MultiFileCodeFileSaverTemplate multiFileCodeFileSaver = new MultiFileCodeFileSaverTemplate();
 
-    public static File executeSaver(Object codeResult, CodeGenTypeEnum codeGenType) {
+    public static File executeSaver(Object codeResult, CodeGenTypeEnum codeGenType, Long appId, Long versionNo) {
         return switch (codeGenType) {
-            case HTML -> htmlCodeFileSaver.saveCode((HtmlCodeResult) codeResult);
-            case MULTI_FILE -> multiFileCodeFileSaver.saveCode((MultiFileCodeResult)codeResult);
+            case HTML -> htmlCodeFileSaver.saveCode((HtmlCodeResult) codeResult, appId, versionNo);
+            case MULTI_FILE -> multiFileCodeFileSaver.saveCode((MultiFileCodeResult) codeResult, appId, versionNo);
             default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码类型" + codeGenType);
 
         };

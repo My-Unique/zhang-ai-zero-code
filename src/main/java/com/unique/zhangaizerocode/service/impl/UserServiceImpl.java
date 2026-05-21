@@ -182,5 +182,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .orderBy(sortField, "ascend".equals(sortOrder));
     }
 
-
+    @Override
+    public boolean isAdmin(User loginUser) {
+        UserRoleEnum userRoleEnum = UserRoleEnum.getEnumByValue(loginUser.getUserRole());
+        return UserRoleEnum.ADMIN.equals(userRoleEnum);
+    }
 }
