@@ -36,7 +36,6 @@ public class AppVersionController {
      * 查询应用历史版本
      */
     @GetMapping("/list")
-    @AuthCheck
     public BaseResponse<List<AppVersionVO>> listAppVersions(@RequestParam Long appId,
                                                             HttpServletRequest httpServletRequest) {
         if (appId == null || appId <= 0) {
@@ -51,7 +50,6 @@ public class AppVersionController {
      * 回退到指定历史版本
      */
     @PostMapping("/rollback")
-    @AuthCheck
     public BaseResponse<Boolean> rollbackVersion(@RequestBody AppRollbackVersionRequest request,
                                                  HttpServletRequest httpServletRequest) {
         if (request == null) {
@@ -72,7 +70,6 @@ public class AppVersionController {
      * 对比两个版本的代码差异
      */
     @PostMapping("/diff")
-    @AuthCheck
     public BaseResponse<AppVersionDiffVO> diffVersion(@RequestBody AppVersionDiffRequest request,
                                                       HttpServletRequest httpServletRequest) {
         if (request == null) {

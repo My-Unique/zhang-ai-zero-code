@@ -2,6 +2,8 @@ package com.unique.zhangaizerocode.service.impl;
 
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import com.unique.zhangaizerocode.exception.ErrorCode;
+import com.unique.zhangaizerocode.exception.ThrowUtils;
 import com.unique.zhangaizerocode.mapper.AppVersionMapper;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.service.AppVersionService;
@@ -48,5 +50,15 @@ public class AppVersionServiceImpl extends ServiceImpl<AppVersionMapper, AppVers
                 .limit(1);
 
         return this.getOne(queryWrapper);
+    }
+
+    @Override
+    public boolean deleteByAppId(Long appId) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
+
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .eq("appId", appId);
+
+        return this.remove(queryWrapper);
     }
 }

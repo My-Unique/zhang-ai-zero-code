@@ -18,4 +18,6 @@ public interface AppVersionService extends IService<AppVersion> {
     List<AppVersion> listByAppId(Long appId);
 
     AppVersion getByAppIdAndVersionNo(Long appId, Long versionNo);
+
+    boolean deleteByAppId(Long appId);
 }

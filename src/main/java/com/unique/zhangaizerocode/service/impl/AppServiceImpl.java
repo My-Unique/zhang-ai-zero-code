@@ -20,6 +20,7 @@ import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.model.entity.User;
+import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.model.vo.AppVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionDiffVO;
@@ -27,6 +28,7 @@ import com.unique.zhangaizerocode.model.vo.AppVersionVO;
 import com.unique.zhangaizerocode.model.vo.UserVO;
 import com.unique.zhangaizerocode.service.AppService;
 import com.unique.zhangaizerocode.service.AppVersionService;
+import com.unique.zhangaizerocode.service.ChatHistoryService;
 import com.unique.zhangaizerocode.service.UserService;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,6 +37,7 @@ import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
+import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -52,6 +55,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
     @Resource
     private AppVersionService appVersionService;
+    @Resource
+    private ChatHistoryService chatHistoryService;
+
 
     @Override
     public AppVO getAppVO(App app) {
@@ -140,10 +146,29 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 + File.separator + codeGenTypeEnum.getValue() + "_" + appId
                 + File.separator + "v" + newVersionNo;
         // 5. 调用 AI 生成代码
-        return aiCodeGeneratorFacade
-                .generateAndSaveCodeStream(message, codeGenTypeEnum, appId, newVersionNo)
+        chatHistoryService.addChatMessage(
+                appId,
+                message,
+                ChatHistoryMessageTypeEnum.USER.getValue(),
+                loginUser.getId()
+        );
+
+        StringBuilder aiResponseBuilder = new StringBuilder();
+        Flux<String> contentFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId, newVersionNo);
+        return contentFlux
+                .doOnNext(aiResponseBuilder::append)
                 .doOnComplete(() -> {
                     // 保存 app_version 表
+                    String aiResponse = aiResponseBuilder.toString();
+                    if (StrUtil.isNotBlank(aiResponse)) {
+                        chatHistoryService.addChatMessage(
+                                appId,
+                                aiResponse,
+                                ChatHistoryMessageTypeEnum.AI.getValue(),
+                                loginUser.getId()
+                        );
+                    }
+
                     AppVersion appVersion = new AppVersion();
                     appVersion.setAppId(appId);
                     appVersion.setVersionNo(newVersionNo);
@@ -164,6 +189,15 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
                     boolean updateResult = this.updateById(updateApp);
                     ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用当前版本失败");
+                })
+                .doOnError(error -> {
+                    String errorMessage = "AI回复失败: " + error.getMessage();
+                    chatHistoryService.addChatMessage(
+                            appId,
+                            errorMessage,
+                            ChatHistoryMessageTypeEnum.AI.getValue(),
+                            loginUser.getId()
+                    );
                 });
     }
 
@@ -205,9 +239,6 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
     }
-
-
-
 
 
     private void checkAppAuth(App app, User loginUser) {
@@ -322,6 +353,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         return diffVO;
     }
+
     /**
      * 将指定版本代码同步到已有部署目录
      */
@@ -351,5 +383,26 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         } catch (Exception e) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "同步部署目录失败：" + e.getMessage());
         }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean removeById(Serializable id) {
+        if (id == null) {
+            return false;
+        }
+        long appId;
+        try {
+            appId = Long.parseLong(id.toString());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (appId <= 0) {
+            return false;
+        }
+
+        chatHistoryService.deleteByAppId(appId);
+        appVersionService.deleteByAppId(appId);
+        return super.removeById(id);
     }
 }

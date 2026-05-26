@@ -1,22 +1,27 @@
 package com.unique.zhangaizerocode.ai;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.unique.zhangaizerocode.model.entity.ChatHistory;
+import com.unique.zhangaizerocode.service.ChatHistoryService;
+import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
 import java.util.stream.Stream;
 //实现ai方法
 
-/**
- * AI代码生成器服务配置类
- * 该类用于配置和创建AI代码生成器服务的Bean
- */
 //工厂类 将 AiCodeGeneratorService 注册进 Spring 容器了
 //用工厂类创建实例
 @Configuration
+@Slf4j
 public class AiCodeGeneratorServiceFactory {
 
     /**
@@ -27,27 +32,56 @@ public class AiCodeGeneratorServiceFactory {
     private ChatModel chatModel;
     @Resource
     private StreamingChatModel streamingChatModel;
+    @Resource
+    private RedisChatMemoryStore redisChatMemoryStore;
+    @Resource
+    private ChatHistoryService chatHistoryService;
     /**
-     * 创建并配置AiCodeGeneratorService Bean
-     * 使用AiServices.create方法创建AI代码生成器服务实例
-     * 该方法将chatModel注入到AiCodeGeneratorService中，使其能够调用AI模型进行代码生成
-
- *
-     * @return 配置好的AiCodeGeneratorService实例，已注入chatModel依赖
+     * AI 服务实例缓存
+     * 缓存策略：
+     * - 最大缓存 1000 个实例
+     * - 写入后 30 分钟过期
+     * - 访问后 10 分钟过期
      */
-    @Bean  // 将该方法返回的对象注册为Spring容器中的Bean
-    public AiCodeGeneratorService aiCodeGeneratorService() {
-        // 定义一个返回AiCodeGeneratorService类型实例的方法
+    private final Cache<Long, AiCodeGeneratorService> serviceCache = Caffeine.newBuilder()
+            .maximumSize(1000)
+            .expireAfterWrite(Duration.ofMinutes(30))
+            .expireAfterAccess(Duration.ofMinutes(10))
+            .removalListener((key, value, cause) -> {
+                log.debug("AI 服务实例被移除，appId: {}, 原因: {}", key, cause);
+            })
+            .build();
 
-      //  return AiServices.create(AiCodeGeneratorService.class, chatModel);
-        //        AI Service 的特点：你写接口，它帮你生成实现。
-        // 使用AiServices.create创建服务“实例”，并传入chatModel参数
+    public AiCodeGeneratorService getAiCodeGeneratorService(long appId) {
+        return serviceCache.get(appId, this::createAiCodeGeneratorService);
+    }
 
+    private AiCodeGeneratorService createAiCodeGeneratorService(long appId) {
+        log.info("为 appId: {} 创建新的 AI 服务实例", appId);
+        // 根据 appId 构建独立的对话记忆
+        MessageWindowChatMemory chatMemory = MessageWindowChatMemory
+                .builder()
+                .id(appId)
+                .chatMemoryStore(redisChatMemoryStore)
+                .maxMessages(20)
+                .build();
+       chatHistoryService.loadChatHistoryToMemory(appId, chatMemory,20);
         return AiServices.builder(AiCodeGeneratorService.class)
                 .chatModel(chatModel)
                 .streamingChatModel(streamingChatModel)
+                .chatMemory(chatMemory)
                 .build();
-
-
     }
+    /**
+     * 默认提供一个 Bean
+     */
+    @Bean
+    public AiCodeGeneratorService aiCodeGeneratorService() {
+        return getAiCodeGeneratorService(0L);
+    }
+
+
 }
+
+
+
