@@ -29,18 +29,54 @@
     <properties>
         <java.version>21</java.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+                Knife4j 4.5.0 内部依赖的是 springdoc 2.3.0。
+                springdoc 2.3.0 自带的 swagger-core-jakarta 2.2.19
+                和 Spring Boot 3.5.14 管理的 Jackson 2.21.x 不兼容，
+                会在访问 /doc.html 或 /v3/api-docs 时出现 NoSuchMethodError。
+
+                这里不要升级 springdoc 到 2.8.x，因为 Knife4j 4.5.0
+                会调用 springdoc 2.3.0 时代的 API，强行升级 springdoc
+                会导致 Knife4jOpenApiCustomizer 再次 NoSuchMethodError。
+
+                正确做法是：
+                1. 保留 Knife4j 4.5.0；
+                2. 保留 Knife4j 兼容的 springdoc 2.3.0；
+                3. 只把真正和 Jackson 冲突的 Swagger 核心依赖升级到 2.2.47。
+             -->
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-core-jakarta</artifactId>
+                <version>2.2.47</version>
+            </dependency>
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations-jakarta</artifactId>
+                <version>2.2.47</version>
+            </dependency>
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-models-jakarta</artifactId>
+                <version>2.2.47</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-devtools</artifactId>
-            <scope>runtime</scope>
-            <optional>true</optional>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>org.springframework.boot</groupId>-->
+<!--            <artifactId>spring-boot-devtools</artifactId>-->
+<!--            <scope>runtime</scope>-->
+<!--            <optional>true</optional>-->
+<!--        </dependency>-->
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
@@ -66,11 +102,13 @@
         </dependency>
 
 <!--        引入knife4j-->
+        <!-- 引入 Knife4j -->
         <dependency>
             <groupId>com.github.xiaoymin</groupId>
             <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
-            <version>4.4.0</version>
+            <version>4.5.0</version>
         </dependency>
+
 
 <!--        引入spring aop 切面编程-->
         <dependency>

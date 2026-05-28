@@ -153,7 +153,7 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
                     chatMemory.add(UserMessage.from(history.getMessage()));
                     loadedCount++;
                 } else if (ChatHistoryMessageTypeEnum.AI.getValue().equals(history.getMessageType())) {
-                    chatMemory.add(AiMessage.from(history.getMessage()));
+                    chatMemory.add(AiMessage.from(sanitizeAiMessageForMemory(history.getMessage())));
                     loadedCount++;
                 }
             }
@@ -164,6 +164,35 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
             // 加载失败不影响系统运行，只是没有历史上下文
             return 0;
         }
+    }
+
+    /**
+     * 清洗写入大模型记忆的 AI 消息。
+     *
+     * chat_history 表既用于前端展示，也用于构造下一轮大模型上下文。
+     * 早期版本会把完整文件代码块写入 chat_history：
+     * - 前端展示看起来很完整；
+     * - 但再次加载进 ChatMemory 时，会让模型看到大量旧代码和伪工具日志；
+     * - 模型容易模仿这些文本，而不是理解当前用户指令并真实调用工具。
+     *
+     * 这里不改数据库原始记录，只在“喂给模型”之前做清洗：
+     * 1. 保留用户和 AI 的语义上下文；
+     * 2. 去掉 fenced code block 的完整代码内容；
+     * 3. 控制单条 AI 记忆长度，避免历史代码挤掉当前指令。
+     */
+    private String sanitizeAiMessageForMemory(String message) {
+        if (StrUtil.isBlank(message)) {
+            return "";
+        }
+        String sanitized = message
+                .replaceAll("(?s)```.*?```", "```[代码内容已省略]```")
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
+        int maxLength = 2000;
+        if (sanitized.length() > maxLength) {
+            sanitized = sanitized.substring(0, maxLength) + "\n[历史消息过长，后续内容已省略]";
+        }
+        return sanitized;
     }
 
 

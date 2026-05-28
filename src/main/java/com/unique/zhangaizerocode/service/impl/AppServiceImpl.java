@@ -6,10 +6,15 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import com.unique.zhangaizerocode.ai.model.message.StreamMessage;
+import com.unique.zhangaizerocode.ai.model.message.StreamMessageTypeEnum;
 import com.unique.zhangaizerocode.constant.AppConstant;
 import com.unique.zhangaizerocode.core.AiCodeGeneratorFacade;
+import com.unique.zhangaizerocode.core.builder.VueProjectBuilder;
+import com.unique.zhangaizerocode.core.handler.StreamHandlerExecutor;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.exception.ThrowUtils;
@@ -19,6 +24,7 @@ import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
+import com.unique.zhangaizerocode.model.entity.ChatHistory;
 import com.unique.zhangaizerocode.model.entity.User;
 import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
@@ -32,14 +38,17 @@ import com.unique.zhangaizerocode.service.ChatHistoryService;
 import com.unique.zhangaizerocode.service.UserService;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.io.File;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -48,6 +57,7 @@ import java.util.stream.Collectors;
  * @author <a href="https://github.com/My-Unique">小建</a>
  */
 @Service
+@Slf4j
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
     @Resource
     private UserService userService;
@@ -57,6 +67,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private AppVersionService appVersionService;
     @Resource
     private ChatHistoryService chatHistoryService;
+    @Resource
+    private StreamHandlerExecutor streamHandlerExecutor;
+    @Resource
+    private VueProjectBuilder vueProjectBuilder;
 
 
     @Override
@@ -145,6 +159,24 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String codePath = AppConstant.CODE_OUTPUT_ROOT_DIR
                 + File.separator + codeGenTypeEnum.getValue() + "_" + appId
                 + File.separator + "v" + newVersionNo;
+
+        /*
+         * 生成新版本前，先准备一个完整的新版本目录。
+         *
+         * 为什么要做这一步：
+         * 1. 用户说“把博客改成蓝色背景”这类需求时，AI 很可能只写入被修改的文件；
+         * 2. 如果 v3 目录一开始是空的，AI 只写 App.vue / Home.vue，v3 就会缺少 package.json、vite.config.js 等文件；
+         * 3. 缺少这些根文件后，v3 就不是一个完整 Vue 项目，npm install / npm run build 都会失败；
+         * 4. 所以正确做法是：先把当前版本完整复制到新版本目录，再让 AI 覆盖需要修改的文件。
+         */
+        prepareNewVersionDirectory(app, appId, codePath);
+        String effectiveMessage = buildCodeGenerationMessage(
+                app,
+                appId,
+                message,
+                codeGenTypeEnum
+        );
+
         // 5. 调用 AI 生成代码
         chatHistoryService.addChatMessage(
                 appId,
@@ -153,53 +185,319 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 loginUser.getId()
         );
 
-        StringBuilder aiResponseBuilder = new StringBuilder();
-        Flux<String> contentFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId, newVersionNo);
-        return contentFlux
-                .doOnNext(aiResponseBuilder::append)
-                .doOnComplete(() -> {
-                    // 保存 app_version 表
-                    String aiResponse = aiResponseBuilder.toString();
-                    if (StrUtil.isNotBlank(aiResponse)) {
-                        chatHistoryService.addChatMessage(
-                                appId,
-                                aiResponse,
-                                ChatHistoryMessageTypeEnum.AI.getValue(),
-                                loginUser.getId()
-                        );
-                    }
+        AtomicInteger toolExecutionCount = new AtomicInteger();
+        Flux<String> codeStream = trackVueProjectToolExecution(
+                aiCodeGeneratorFacade.generateAndSaveCodeStream(effectiveMessage, codeGenTypeEnum, appId, newVersionNo),
+                codeGenTypeEnum,
+                toolExecutionCount
+        );
+        Flux<String> handledStream = streamHandlerExecutor
+                .doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
 
-                    AppVersion appVersion = new AppVersion();
-                    appVersion.setAppId(appId);
-                    appVersion.setVersionNo(newVersionNo);
-                    appVersion.setUserMessage(message);
-                    appVersion.setCodePath(codePath);
-                    appVersion.setCreateUser(loginUser.getId());
-                    appVersion.setIsDelete(0);
-
-                    boolean saveResult = appVersionService.save(appVersion);
-                    ThrowUtils.throwIf(!saveResult, ErrorCode.OPERATION_ERROR, "保存应用版本失败");
-
-                    // 更新 app 当前版本
-                    App updateApp = new App();
-                    updateApp.setId(appId);
-                    updateApp.setCurrentVersionId(appVersion.getId());
-                    updateApp.setVersionNo(newVersionNo);
-                    updateApp.setEditTime(LocalDateTime.now());
-
-                    boolean updateResult = this.updateById(updateApp);
-                    ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用当前版本失败");
-                })
-                .doOnError(error -> {
-                    String errorMessage = "AI回复失败: " + error.getMessage();
-                    chatHistoryService.addChatMessage(
+        /*
+         * 版本保存不能只放在 doOnComplete 里。
+         *
+         * 原因：
+         * 1. doOnComplete 是一个旁路回调，它不会向前端输出任何“保存完成”的信号；
+         * 2. 如果 SSE 客户端提前断开、Knife4j 没有持续消费完整流，doOnComplete 就不会执行；
+         * 3. 结果就是代码目录可能已经创建了，但 app_version 没有保存，app.versionNo 仍然是 0；
+         * 4. 用户马上点击部署时，就会一直看到“应用暂无可部署版本，请先生成代码”。
+         *
+         * 这里用 concatWith 把“校验代码目录 + 保存版本 + 更新 app.versionNo”
+         * 串到 AI 输出流的最后一步。只有这一步成功执行后，前端才会收到“版本保存完成”的尾消息。
+         * 如果这一步失败，AppController 会把异常包装成 SSE error 事件返回，问题会直接暴露给前端。
+         */
+        return handledStream
+                .concatWith(Mono.fromCallable(() -> {
+                    log.info("AI 代码生成流完成，开始校验并保存版本，appId: {}, versionNo: {}, codePath: {}",
+                            appId, newVersionNo, codePath);
+                    validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, toolExecutionCount.get());
+                    saveAppVersionAndUpdateCurrent(
                             appId,
-                            errorMessage,
-                            ChatHistoryMessageTypeEnum.AI.getValue(),
+                            newVersionNo,
+                            message,
+                            codePath,
                             loginUser.getId()
                     );
-                });
+                    log.info("AI 代码生成版本保存完成，appId: {}, versionNo: {}", appId, newVersionNo);
+                    return "\n\n[系统] 版本保存完成，可进行部署。\n\n";
+                }))
+                .doOnError(error -> log.error("AI 代码生成或保存版本失败，appId: {}, versionNo: {}",
+                        appId, newVersionNo, error))
+                .doFinally(signalType -> log.info("AI 代码生成请求结束，appId: {}, versionNo: {}, signal: {}",
+                        appId, newVersionNo, signalType));
     }
+
+    private String buildCodeGenerationMessage(App app,
+                                              Long appId,
+                                              String message,
+                                              CodeGenTypeEnum codeGenTypeEnum) {
+        if (!CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
+            return message;
+        }
+
+        Long currentVersionNo = app.getVersionNo();
+        if (currentVersionNo == null || currentVersionNo <= 0) {
+            return message;
+        }
+
+        AppVersion currentVersion = appVersionService.getByAppIdAndVersionNo(appId, currentVersionNo);
+        if (currentVersion == null || StrUtil.isBlank(currentVersion.getCodePath())) {
+            return message;
+        }
+
+        File sourceDir = new File(currentVersion.getCodePath());
+        if (!sourceDir.exists() || !sourceDir.isDirectory()) {
+            return message;
+        }
+
+        StringBuilder contextBuilder = new StringBuilder();
+        contextBuilder.append("用户本次需求：\n")
+                .append(message)
+                .append("\n\n");
+
+        appendRecentUserMessages(appId, message, contextBuilder);
+
+        contextBuilder.append("""
+                下面是当前 Vue 项目的关键源码快照。
+                当前源码快照是本次修改的事实基线。
+                请基于这些源码进行修改，只调用 writeFile 写入本次确实需要修改的文件。
+                没有被用户要求修改的功能、结构和内容必须保留。
+                如果最近用户需求记录和当前源码快照不一致，以当前源码快照为准，不要补做历史需求。
+                
+                """);
+
+        appendVueProjectSourceSnapshot(sourceDir, contextBuilder);
+        return contextBuilder.toString();
+    }
+
+    private void appendRecentUserMessages(Long appId, String currentMessage, StringBuilder contextBuilder) {
+        List<ChatHistory> recentUserMessages = chatHistoryService.list(
+                QueryWrapper.create()
+                        .eq(ChatHistory::getAppId, appId)
+                        .eq(ChatHistory::getMessageType, ChatHistoryMessageTypeEnum.USER.getValue())
+                        .orderBy(ChatHistory::getCreateTime, false)
+                        .limit(5)
+        );
+        if (CollUtil.isEmpty(recentUserMessages)) {
+            return;
+        }
+
+        Collections.reverse(recentUserMessages);
+        Set<String> uniqueMessages = new LinkedHashSet<>();
+        for (ChatHistory history : recentUserMessages) {
+            String historyMessage = StrUtil.trim(history.getMessage());
+            if (StrUtil.isBlank(historyMessage) || Objects.equals(historyMessage, currentMessage)) {
+                continue;
+            }
+            uniqueMessages.add(historyMessage);
+        }
+        if (CollUtil.isEmpty(uniqueMessages)) {
+            return;
+        }
+
+        contextBuilder.append("最近用户需求记录（仅用于理解上下文，不是本轮待办；本轮只执行“用户本次需求”）：\n");
+        for (String historyMessage : uniqueMessages) {
+            contextBuilder.append("- ").append(historyMessage).append("\n");
+        }
+        contextBuilder.append("\n");
+    }
+
+    private void appendVueProjectSourceSnapshot(File sourceDir, StringBuilder contextBuilder) {
+        List<String> relativeFilePaths = List.of(
+                "package.json",
+                "vite.config.js",
+                "index.html",
+                "src/main.js",
+                "src/App.vue",
+                "src/router/index.js",
+                "src/pages/Chat.vue"
+        );
+
+        int maxTotalLength = 24000;
+        int maxSingleFileLength = 8000;
+
+        contextBuilder.append("<current_project>\n");
+        for (String relativeFilePath : relativeFilePaths) {
+            File file = new File(sourceDir, relativeFilePath);
+            if (!file.exists() || !file.isFile()) {
+                continue;
+            }
+            String fileContent = FileUtil.readUtf8String(file);
+            if (fileContent.length() > maxSingleFileLength) {
+                fileContent = fileContent.substring(0, maxSingleFileLength)
+                        + "\n<!-- 文件内容过长，后续内容已省略 -->";
+            }
+
+            String fileBlock = "<file path=\"" + relativeFilePath + "\">\n"
+                    + fileContent
+                    + "\n</file>\n\n";
+            if (contextBuilder.length() + fileBlock.length() > maxTotalLength) {
+                contextBuilder.append("<!-- 源码快照过长，后续文件已省略 -->\n");
+                break;
+            }
+            contextBuilder.append(fileBlock);
+        }
+        contextBuilder.append("</current_project>\n");
+    }
+
+    private Flux<String> trackVueProjectToolExecution(Flux<String> codeStream,
+                                                      CodeGenTypeEnum codeGenTypeEnum,
+                                                      AtomicInteger toolExecutionCount) {
+        if (!CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
+            return codeStream;
+        }
+        return codeStream.doOnNext(chunk -> {
+            try {
+                StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
+                if (StreamMessageTypeEnum.TOOL_EXECUTED.getValue().equals(streamMessage.getType())) {
+                    int count = toolExecutionCount.incrementAndGet();
+                    log.info("Vue 项目本轮已执行文件写入工具次数: {}", count);
+                }
+            } catch (Exception e) {
+                log.warn("解析 Vue 项目流消息失败，chunk: {}", chunk, e);
+            }
+        });
+    }
+
+    private void validateGeneratedCodeDirectory(CodeGenTypeEnum codeGenTypeEnum, String codePath, int toolExecutionCount) {
+        File codeDir = new File(codePath);
+        ThrowUtils.throwIf(!codeDir.exists() || !codeDir.isDirectory(),
+                ErrorCode.SYSTEM_ERROR, "代码生成失败，输出目录不存在");
+
+        /*
+         * Vue 项目不是单个 HTML 文件，必须具备最小 Vite 工程结构。
+         *
+         * 之前出现过 AI 只写入 index.html 的情况：
+         * - 目录存在；
+         * - 版本记录也会被保存；
+         * - 但部署时 npm install 找不到 package.json，最终才失败。
+         *
+         * 这里不要强制要求 src/router/index.js。
+         * 原因是简单应用可以不使用 Vue Router，只要 src/main.js 没有 import router，
+         * 缺少 router 目录并不会影响 npm install / npm run build。
+         * 真正必须存在的是 Vite 构建入口和 Vue 根组件：
+         * package.json、vite.config.js、index.html、src/main.js、src/App.vue。
+         *
+         * 所以这里在保存 app_version 前就做校验。
+         * 只要核心文件缺失，就不允许把这个目录保存成一个正式版本。
+         */
+        if (CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
+            /*
+             * 对 Vue 项目来说，目录存在不代表本轮真的改了代码。
+             *
+             * 修改历史版本时，prepareNewVersionDirectory 会先把旧版本完整复制到新版本目录；
+             * 如果模型本轮没有真实调用 writeFile，目录里的文件仍然是旧版本，
+             * 但只检查 package.json / src/App.vue 是否存在会误判为生成成功。
+             *
+             * 所以 Vue 项目必须要求本轮至少执行过一次文件写入工具。
+             * 否则就不保存 app_version，也不更新 app.versionNo，避免出现“说改了但页面没变”的假版本。
+             */
+            ThrowUtils.throwIf(toolExecutionCount <= 0,
+                    ErrorCode.SYSTEM_ERROR,
+                    "Vue 项目生成失败，本轮没有执行任何文件写入工具");
+
+            List<String> requiredFiles = List.of(
+                    "package.json",
+                    "vite.config.js",
+                    "index.html",
+                    "src/main.js",
+                    "src/App.vue"
+            );
+
+            List<String> missingFiles = requiredFiles.stream()
+                    .filter(filePath -> !new File(codeDir, filePath).exists())
+                    .toList();
+
+            ThrowUtils.throwIf(CollUtil.isNotEmpty(missingFiles),
+                    ErrorCode.SYSTEM_ERROR,
+                    "Vue 项目生成不完整，缺少文件: " + String.join(", ", missingFiles));
+        }
+    }
+
+    private void prepareNewVersionDirectory(App app, Long appId, String newCodePath) {
+        /*
+         * 这里负责把“新版本目录”准备成一个完整项目目录。
+         *
+         * 典型场景：
+         * - v2 是一个完整 Vue 项目；
+         * - 用户要求“改成蓝色背景”；
+         * - AI 可能只调用工具写入 src/App.vue，而不会重新写 package.json、vite.config.js、index.html；
+         * - 如果不先复制 v2，新生成的 v3 就只有少数几个文件，无法 npm install / npm run build。
+         */
+        File targetDir = new File(newCodePath);
+
+        /*
+         * 如果目标目录已经存在，通常说明上一次同版本生成失败，留下了半成品目录。
+         * 这里先删掉，避免旧的空目录或残缺文件影响本次校验。
+         */
+        if (targetDir.exists()) {
+            FileUtil.del(targetDir);
+        }
+
+        Long currentVersionNo = app.getVersionNo();
+        /*
+         * 当前应用还没有任何历史版本时，说明这是第一次生成。
+         * 第一次生成没有旧版本可复制，也不应该提前创建空目录。
+         *
+         * 原因：
+         * 1. 真正的项目目录应该由 FileWriteTool 在第一次写文件时创建；
+         * 2. 如果这里提前创建空 v1，后面工具没执行时，文件树会显示一个空 v1；
+         * 3. 这会误导排查，以为“生成了目录但文件丢了”；
+         * 4. 实际正确状态应该是：工具没执行，就没有项目目录，最后校验直接失败。
+         */
+        if (currentVersionNo == null || currentVersionNo <= 0) {
+            return;
+        }
+
+        FileUtil.mkdir(targetDir);
+
+        /*
+         * 从 app 当前版本号找到当前版本记录。
+         * 注意这里不使用 maxVersionNo，因为 maxVersionNo 表示数据库里最大的版本号；
+         * app.versionNo 才表示用户当前正在使用、部署、回滚后的真实当前版本。
+         */
+        AppVersion currentVersion = appVersionService.getByAppIdAndVersionNo(appId, currentVersionNo);
+        ThrowUtils.throwIf(currentVersion == null, ErrorCode.NOT_FOUND_ERROR, "当前版本记录不存在");
+
+        String sourceCodePath = currentVersion.getCodePath();
+        ThrowUtils.throwIf(StrUtil.isBlank(sourceCodePath), ErrorCode.SYSTEM_ERROR, "当前版本代码路径为空");
+
+        File sourceDir = new File(sourceCodePath);
+        ThrowUtils.throwIf(!sourceDir.exists() || !sourceDir.isDirectory(),
+                ErrorCode.SYSTEM_ERROR, "当前版本代码目录不存在，无法创建新版本");
+
+        /*
+         * 把当前完整版本复制到新版本目录。
+         * 后续 FileWriteTool 会继续写入同一个 newCodePath，对需要修改的文件执行覆盖。
+         * 这样即使 AI 只输出改动文件，新版本目录也仍然是完整可运行项目。
+         */
+        FileUtil.copyContent(sourceDir, targetDir, true);
+    }
+
+    private void saveAppVersionAndUpdateCurrent(Long appId, Long versionNo, String userMessage,
+                                                String codePath, Long userId) {
+        AppVersion appVersion = new AppVersion();
+        appVersion.setAppId(appId);
+        appVersion.setVersionNo(versionNo);
+        appVersion.setUserMessage(userMessage);
+        appVersion.setCodePath(codePath);
+        appVersion.setCreateUser(userId);
+        appVersion.setIsDelete(0);
+
+        boolean saveResult = appVersionService.save(appVersion);
+        ThrowUtils.throwIf(!saveResult, ErrorCode.OPERATION_ERROR, "保存应用版本失败");
+
+        App updateApp = new App();
+        updateApp.setId(appId);
+        updateApp.setCurrentVersionId(appVersion.getId());
+        updateApp.setVersionNo(versionNo);
+        updateApp.setEditTime(LocalDateTime.now());
+
+        boolean updateResult = this.updateById(updateApp);
+        ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用当前版本失败");
+    }
+
 
     @Override
     public String deployApp(Long appId, User loginUser) {
@@ -226,8 +524,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             deployKey = RandomUtil.randomString(6);
         }
 
-        // 复制当前版本到部署目录
-        syncVersionToDeployDir(appVersion, deployKey);
+        // 复制当前版本到部署目录；Vue 项目会先构建，再复制 dist 目录
+        syncVersionToDeployDir(appVersion, deployKey, app.getCodeGenType());
 
         App updateApp = new App();
         updateApp.setId(appId);
@@ -301,7 +599,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         // 2. 如果应用已经部署过，就同步部署目录
         if (StrUtil.isNotBlank(app.getDeployKey())) {
-            syncVersionToDeployDir(appVersion, app.getDeployKey());
+            syncVersionToDeployDir(appVersion, app.getDeployKey(), app.getCodeGenType());
 
             // 3. 更新部署时间
             App deployUpdateApp = new App();
@@ -357,13 +655,35 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     /**
      * 将指定版本代码同步到已有部署目录
      */
-    private void syncVersionToDeployDir(AppVersion appVersion, String deployKey) {
+    private void syncVersionToDeployDir(AppVersion appVersion, String deployKey, String codeGenType) {
         // 用版本表里保存的真实代码路径，不要重新手拼路径
         String sourceDirPath = appVersion.getCodePath();
         File sourceDir = new File(sourceDirPath);
 
         if (!sourceDir.exists() || !sourceDir.isDirectory()) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "版本代码目录不存在，无法同步部署");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "应用代码不存在，请先生成代码");
+        }
+
+        /*
+         * Vue 工程不能直接复制源码目录部署。
+         *
+         * 原因：
+         * 1. Vue 项目的源码目录里有 package.json、src、vite.config.js 等开发期文件；
+         * 2. 浏览器真正能直接访问的是 npm run build 后生成的 dist 目录；
+         * 3. 所以部署 Vue 项目时必须先在版本目录执行 npm install / npm run build；
+         * 4. 构建成功后，把 sourceDir 从源码目录切换成 dist 目录，后面统一复制 sourceDir 到部署目录。
+         */
+        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenType);
+        if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT) {
+            boolean buildSuccess = vueProjectBuilder.buildProject(sourceDirPath);
+            ThrowUtils.throwIf(!buildSuccess, ErrorCode.SYSTEM_ERROR, "Vue 项目构建失败，请检查代码和依赖");
+
+            File distDir = new File(sourceDirPath, "dist");
+            ThrowUtils.throwIf(!distDir.exists() || !distDir.isDirectory(),
+                    ErrorCode.SYSTEM_ERROR, "Vue 项目构建完成但未生成 dist 目录");
+
+            sourceDir = distDir;
+            log.info("Vue 项目构建成功，将部署 dist 目录: {}", distDir.getAbsolutePath());
         }
 
         String deployDirPath = AppConstant.CODE_DEPLOY_ROOT_DIR + File.separator + deployKey;

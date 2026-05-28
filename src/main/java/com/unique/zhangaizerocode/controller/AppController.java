@@ -82,8 +82,10 @@ public class AppController {
         String codeGenType = appAddRequest.getCodeGenType();
         CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenType);
         if (codeGenTypeEnum == null) {
-            codeGenTypeEnum = CodeGenTypeEnum.MULTI_FILE;
+//            codeGenTypeEnum = CodeGenTypeEnum.MULTI_FILE;
+            codeGenTypeEnum = CodeGenTypeEnum.VUE_PROJECT;
         }
+
         app.setCodeGenType(codeGenTypeEnum.getValue());
 
         // 重点：刚创建 app 时还没有任何代码版本，所以当前版本号是 0
@@ -314,15 +316,15 @@ public class AppController {
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
                                                        HttpServletRequest request) {
-        // 参数校验
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
-        ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "用户消息不能为空");
-        // 获取当前登录用户
-        User loginUser = userService.getLoginUser(request);
-        // 调用服务生成代码（流式）
-        Flux<String> contentFlux = appService.chatToGenCode(appId, message, loginUser);
-        // 转换为 ServerSentEvent 格式
-        return contentFlux
+        return Flux.defer(() -> {
+                    // 参数校验
+                    ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
+                    ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+                    // 获取当前登录用户
+                    User loginUser = userService.getLoginUser(request);
+                    // 调用服务生成代码（流式）
+                    return appService.chatToGenCode(appId, message, loginUser);
+                })
                 .map(chunk -> {
                     // 将内容包装成JSON对象
                     Map<String, String> wrapper = Map.of("d", chunk);
@@ -330,6 +332,25 @@ public class AppController {
                     return ServerSentEvent.<String>builder()
                             .data(jsonData)
                             .build();
+                })
+                .onErrorResume(error -> {
+                    /*
+                     * 这个接口的响应类型是 text/event-stream。
+                     * 一旦流已经开始输出，后面再抛 BusinessException，
+                     * Spring 的全局异常处理器会尝试返回普通 JSON，
+                     * 但当前响应头已经是 text/event-stream，
+                     * 于是会出现：
+                     * No converter for BaseResponse with preset Content-Type 'text/event-stream'
+                     *
+                     * 所以 SSE 接口内部的错误不能交给普通全局异常处理器兜底。
+                     * 这里把异常包装成一条 SSE 消息返回给前端，让前端仍然按流式消息处理。
+                     */
+                    Map<String, String> wrapper = Map.of("e", error.getMessage());
+                    String jsonData = JSONUtil.toJsonStr(wrapper);
+                    return Flux.just(ServerSentEvent.<String>builder()
+                            .event("error")
+                            .data(jsonData)
+                            .build());
                 });
     }
     /**
