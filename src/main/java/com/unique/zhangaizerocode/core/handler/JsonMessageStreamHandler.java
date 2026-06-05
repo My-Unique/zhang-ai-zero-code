@@ -77,11 +77,15 @@ public class JsonMessageStreamHandler {
             case TOOL_REQUEST -> {
                 ToolRequestMessage toolRequestMessage = JSONUtil.toBean(chunk, ToolRequestMessage.class);
                 String toolId = toolRequestMessage.getId();
+                if (toolId == null && seenToolIds.isEmpty()) {
+                    seenToolIds.add("__pending_tool__");
+                    return "正在规划页面结构并生成项目文件...\n";
+                }
                 // 检查是否是第一次看到这个工具 ID
                 if (toolId != null && !seenToolIds.contains(toolId)) {
                     // 第一次调用这个工具，记录 ID 并完整返回工具信息
                     seenToolIds.add(toolId);
-                    return "\n\n[选择工具] 写入文件\n\n";
+                    return "\n正在生成并写入项目文件...\n";
                 } else {
                     // 不是第一次调用这个工具，直接返回空
                     return "";

@@ -8,6 +8,7 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 export default defineConfig({
   plugins: [
     vue(),
+    //浏览器下面的小插件，方便调试vue组件
     vueDevTools(),
   ],
   resolve: {

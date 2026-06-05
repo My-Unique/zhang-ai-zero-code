@@ -120,7 +120,17 @@ class AiServiceStreamingResponseHandler implements StreamingChatResponseHandler 
             for (ToolExecutionRequest toolExecutionRequest : aiMessage.toolExecutionRequests()) {
                 String toolName = toolExecutionRequest.name();
                 ToolExecutor toolExecutor = toolExecutors.get(toolName);
-                String toolExecutionResult = toolExecutor.execute(toolExecutionRequest, memoryId);
+                String toolExecutionResult;
+                try {
+                    toolExecutionResult = toolExecutor.execute(toolExecutionRequest, memoryId);
+                } catch (RuntimeException e) {
+                    LOG.warn("Tool execution failed, asking model to correct the tool call. toolName: {}, arguments: {}",
+                            toolName, toolExecutionRequest.arguments(), e);
+                    toolExecutionResult = "Tool execution failed because the arguments are not valid JSON. "
+                            + "Call the tool again with strictly valid JSON arguments. "
+                            + "All quotes, backslashes and line breaks inside file content must be JSON-escaped. "
+                            + "Error: " + e.getMessage();
+                }
                 ToolExecutionResultMessage toolExecutionResultMessage =
                         ToolExecutionResultMessage.from(toolExecutionRequest, toolExecutionResult);
                 addToMemory(toolExecutionResultMessage);

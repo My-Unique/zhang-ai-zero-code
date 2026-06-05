@@ -20,6 +20,8 @@ public interface ChatHistoryService extends IService<ChatHistory> {
 
     boolean deleteByAppId(Long appId);
 
+    boolean deleteAppChatHistory(Long appId, User loginUser);
+
     QueryWrapper getQueryWrapper(ChatHistoryQueryRequest chatHistoryQueryRequest);
 
     Page<ChatHistory> listAppChatHistoryByPage(Long appId, int pageSize,

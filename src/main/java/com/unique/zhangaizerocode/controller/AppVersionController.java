@@ -7,7 +7,9 @@ import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
+import com.unique.zhangaizerocode.model.dto.app.AppVersionFileRequest;
 import com.unique.zhangaizerocode.model.vo.AppVersionDiffVO;
+import com.unique.zhangaizerocode.model.vo.AppVersionFileVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionVO;
 import com.unique.zhangaizerocode.service.AppService;
 import jakarta.annotation.Resource;
@@ -87,5 +89,31 @@ public class AppVersionController {
 
         AppVersionDiffVO diffVO = appService.diffVersion(request, httpServletRequest);
         return ResultUtils.success(diffVO);
+    }
+
+    @GetMapping("/files")
+    public BaseResponse<List<String>> listVersionFiles(@RequestParam Long appId,
+                                                       @RequestParam Long versionNo,
+                                                       HttpServletRequest request) {
+        return ResultUtils.success(appService.listVersionFiles(appId, versionNo, request));
+    }
+
+    @PostMapping("/file/read")
+    public BaseResponse<AppVersionFileVO> readVersionFile(@RequestBody AppVersionFileRequest request,
+                                                          HttpServletRequest httpServletRequest) {
+        return ResultUtils.success(appService.readVersionFile(request, httpServletRequest));
+    }
+
+    @PostMapping("/file/save")
+    public BaseResponse<AppVersionVO> saveVersionFile(@RequestBody AppVersionFileRequest request,
+                                                      HttpServletRequest httpServletRequest) {
+        return ResultUtils.success(appService.saveVersionFile(request, httpServletRequest));
+    }
+
+    @GetMapping("/preview")
+    public BaseResponse<String> previewVersion(@RequestParam Long appId,
+                                               @RequestParam Long versionNo,
+                                               HttpServletRequest request) {
+        return ResultUtils.success(appService.previewVersion(appId, versionNo, request));
     }
 }

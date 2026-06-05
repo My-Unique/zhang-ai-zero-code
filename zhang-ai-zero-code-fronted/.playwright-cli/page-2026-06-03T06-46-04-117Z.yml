@@ -1,0 +1,63 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - link "Logo 应用生成" [ref=e7] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e8]:
+          - img "Logo" [ref=e9]
+          - heading "应用生成" [level=1] [ref=e10]
+      - menu [ref=e12]:
+        - menuitem "首页" [ref=e13] [cursor=pointer]:
+          - generic [ref=e14]: 首页
+        - menuitem "关于" [ref=e15] [cursor=pointer]:
+          - generic [ref=e16]: 关于
+        - menuitem "编程导航" [ref=e17] [cursor=pointer]:
+          - link "编程导航" [ref=e19]:
+            - /url: https://www.codefather.cn
+        - generic:
+          - generic:
+            - img:
+              - img
+      - link "登 录" [ref=e23] [cursor=pointer]:
+        - /url: /user/login
+        - generic [ref=e24]: 登 录
+    - main [ref=e25]:
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - generic [ref=e29]: AI App Builder
+          - heading "AI 应用生成" [level=1] [ref=e30]
+          - paragraph [ref=e31]: 通过自然语言描述需求，快速生成可运行、可迭代的完整应用。
+          - generic [ref=e32]:
+            - generic [ref=e33]: 从想法到页面，缩短产品验证周期
+            - generic [ref=e35]: 支持持续对话修改，沉淀应用版本
+            - generic [ref=e37]: 面向真实业务场景，生成更完整的交付物
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - heading "用户登录" [level=2] [ref=e41]
+            - generic [ref=e42]: 登录后开始生成你的 AI 应用
+          - generic [ref=e43]:
+            - generic [ref=e45]:
+              - generic "账号" [ref=e47]: "* 账号"
+              - textbox "* 账号" [ref=e51]:
+                - /placeholder: 请输入账号
+            - generic [ref=e53]:
+              - generic "密码" [ref=e55]: "* 密码"
+              - generic [ref=e59]:
+                - textbox "* 密码" [ref=e60]:
+                  - /placeholder: 请输入密码
+                - img "eye-invisible" [ref=e62] [cursor=pointer]:
+                  - img [ref=e63]
+            - generic [ref=e66]:
+              - generic [ref=e67]: 没有账号？
+              - link "立即注册" [ref=e68] [cursor=pointer]:
+                - /url: /user/register
+            - button "登 录" [ref=e74] [cursor=pointer]:
+              - generic [ref=e75]: 登 录
+    - paragraph [ref=e78]:
+      - link "Unique的零代码应用生成平台" [ref=e79] [cursor=pointer]:
+        - /url: https://github.com/My-Unique/zhang-ai-zero-code
+  - generic [ref=e80]:
+    - generic "Toggle devtools panel" [ref=e81] [cursor=pointer]:
+      - img [ref=e82]
+    - generic "Toggle Component Inspector" [ref=e87] [cursor=pointer]:
+      - img [ref=e88]

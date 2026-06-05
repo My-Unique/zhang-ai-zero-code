@@ -22,6 +22,7 @@ import com.unique.zhangaizerocode.mapper.AppMapper;
 import com.unique.zhangaizerocode.model.dto.app.AppQueryRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
+import com.unique.zhangaizerocode.model.dto.app.AppVersionFileRequest;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.model.entity.ChatHistory;
@@ -30,6 +31,7 @@ import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.model.vo.AppVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionDiffVO;
+import com.unique.zhangaizerocode.model.vo.AppVersionFileVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionVO;
 import com.unique.zhangaizerocode.model.vo.UserVO;
 import com.unique.zhangaizerocode.service.AppService;
@@ -46,6 +48,7 @@ import reactor.core.publisher.Mono;
 
 import java.io.File;
 import java.io.Serializable;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -500,6 +503,27 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
 
     @Override
+    public String previewApp(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
+
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        checkAppAuth(app, loginUser);
+
+        Long versionNo = app.getVersionNo();
+        ThrowUtils.throwIf(versionNo == null || versionNo <= 0,
+                ErrorCode.OPERATION_ERROR, "应用暂无可预览版本，请先生成代码");
+
+        AppVersion appVersion = appVersionService.getByAppIdAndVersionNo(appId, versionNo);
+        ThrowUtils.throwIf(appVersion == null, ErrorCode.NOT_FOUND_ERROR, "当前版本记录不存在");
+
+        String previewKey = AppConstant.PREVIEW_KEY_PREFIX + appId;
+        syncVersionToDeployDir(appVersion, previewKey, app.getCodeGenType());
+        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
+    }
+
+    @Override
     public String deployApp(Long appId, User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
@@ -535,6 +559,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         boolean updateResult = this.updateById(updateApp);
         ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
 
+        // 同步当前对象，避免同一请求链路后续继续读取部署前的旧状态。
+        app.setDeployKey(deployKey);
+        app.setDeployedTime(updateApp.getDeployedTime());
+
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
     }
 
@@ -558,16 +586,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         List<AppVersion> versionList = appVersionService.listByAppId(appId);
 
-        return versionList.stream().map(version -> {
-            AppVersionVO vo = new AppVersionVO();
-            vo.setId(version.getId());
-            vo.setAppId(version.getAppId());
-            vo.setVersionNo(version.getVersionNo());
-            vo.setUserMessage(version.getUserMessage());
-            vo.setCodePath(version.getCodePath());
-            vo.setCreateTime(version.getCreateTime());
-            return vo;
-        }).toList();
+        return versionList.stream().map(this::toAppVersionVO).toList();
     }
 
     @Override
@@ -634,8 +653,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             fileName = "index.html";
         }
 
-        File oldFile = new File(oldVersion.getCodePath(), fileName);
-        File newFile = new File(newVersion.getCodePath(), fileName);
+        File oldFile = resolveVersionFile(oldVersion, fileName);
+        File newFile = resolveVersionFile(newVersion, fileName);
 
         if (!oldFile.exists() || !newFile.exists()) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "对比文件不存在");
@@ -650,6 +669,130 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         diffVO.setNewCode(newCode);
 
         return diffVO;
+    }
+
+    @Override
+    public List<String> listVersionFiles(Long appId, Long versionNo, HttpServletRequest request) {
+        AppVersion version = getAuthorizedVersion(appId, versionNo, request);
+        Path root = Path.of(version.getCodePath()).toAbsolutePath().normalize();
+
+        return FileUtil.loopFiles(root.toFile()).stream()
+                .map(file -> root.relativize(file.toPath().toAbsolutePath().normalize()).toString().replace('\\', '/'))
+                .filter(this::isEditableSourceFile)
+                .sorted()
+                .limit(500)
+                .toList();
+    }
+
+    @Override
+    public AppVersionFileVO readVersionFile(AppVersionFileRequest request, HttpServletRequest httpServletRequest) {
+        validateVersionFileRequest(request, false);
+        AppVersion version = getAuthorizedVersion(request.getAppId(), request.getVersionNo(), httpServletRequest);
+        File targetFile = resolveVersionFile(version, request.getFilePath());
+        ThrowUtils.throwIf(!targetFile.exists() || !targetFile.isFile(), ErrorCode.NOT_FOUND_ERROR, "代码文件不存在");
+        ThrowUtils.throwIf(targetFile.length() > 2 * 1024 * 1024, ErrorCode.PARAMS_ERROR, "代码文件过大，无法在线编辑");
+
+        AppVersionFileVO vo = new AppVersionFileVO();
+        vo.setPath(request.getFilePath());
+        vo.setContent(FileUtil.readUtf8String(targetFile));
+        return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AppVersionVO saveVersionFile(AppVersionFileRequest request, HttpServletRequest httpServletRequest) {
+        validateVersionFileRequest(request, true);
+        User loginUser = userService.getLoginUser(httpServletRequest);
+        App app = this.getById(request.getAppId());
+        checkAppAuth(app, loginUser);
+
+        AppVersion sourceVersion = appVersionService.getByAppIdAndVersionNo(request.getAppId(), request.getVersionNo());
+        ThrowUtils.throwIf(sourceVersion == null, ErrorCode.NOT_FOUND_ERROR, "源版本不存在");
+
+        Long newVersionNo = appVersionService.getMaxVersionNo(request.getAppId()) + 1;
+        String newCodePath = AppConstant.CODE_OUTPUT_ROOT_DIR
+                + File.separator + app.getCodeGenType() + "_" + request.getAppId()
+                + File.separator + "v" + newVersionNo;
+        File newCodeDir = new File(newCodePath);
+        FileUtil.mkdir(newCodeDir);
+        FileUtil.copyContent(new File(sourceVersion.getCodePath()), newCodeDir, true);
+
+        AppVersion temporaryVersion = new AppVersion();
+        temporaryVersion.setCodePath(newCodePath);
+        File targetFile = resolveVersionFile(temporaryVersion, request.getFilePath());
+        FileUtil.mkParentDirs(targetFile);
+        FileUtil.writeUtf8String(request.getContent(), targetFile);
+
+        saveAppVersionAndUpdateCurrent(
+                request.getAppId(),
+                newVersionNo,
+                "[手动编辑] " + request.getFilePath(),
+                newCodePath,
+                loginUser.getId()
+        );
+
+        AppVersion savedVersion = appVersionService.getByAppIdAndVersionNo(request.getAppId(), newVersionNo);
+        syncVersionToDeployDir(savedVersion, AppConstant.PREVIEW_KEY_PREFIX + request.getAppId(), app.getCodeGenType());
+        return toAppVersionVO(savedVersion);
+    }
+
+    @Override
+    public String previewVersion(Long appId, Long versionNo, HttpServletRequest request) {
+        AppVersion version = getAuthorizedVersion(appId, versionNo, request);
+        App app = this.getById(appId);
+        String previewKey = AppConstant.PREVIEW_KEY_PREFIX + appId + "_v" + versionNo;
+        syncVersionToDeployDir(version, previewKey, app.getCodeGenType());
+        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
+    }
+
+    private AppVersion getAuthorizedVersion(Long appId, Long versionNo, HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 id 不能为空");
+        ThrowUtils.throwIf(versionNo == null || versionNo <= 0, ErrorCode.PARAMS_ERROR, "版本号不能为空");
+        User loginUser = userService.getLoginUser(request);
+        App app = this.getById(appId);
+        checkAppAuth(app, loginUser);
+        AppVersion version = appVersionService.getByAppIdAndVersionNo(appId, versionNo);
+        ThrowUtils.throwIf(version == null, ErrorCode.NOT_FOUND_ERROR, "版本不存在");
+        return version;
+    }
+
+    private File resolveVersionFile(AppVersion version, String filePath) {
+        Path root = Path.of(version.getCodePath()).toAbsolutePath().normalize();
+        Path target = root.resolve(filePath).normalize();
+        ThrowUtils.throwIf(!target.startsWith(root), ErrorCode.PARAMS_ERROR, "非法文件路径");
+        ThrowUtils.throwIf(!isEditableSourceFile(root.relativize(target).toString().replace('\\', '/')),
+                ErrorCode.PARAMS_ERROR, "不支持编辑该文件");
+        return target.toFile();
+    }
+
+    private boolean isEditableSourceFile(String filePath) {
+        String normalized = filePath.replace('\\', '/');
+        if (normalized.startsWith("node_modules/")
+                || normalized.startsWith("dist/")
+                || normalized.startsWith(".git/")
+                || normalized.contains("/node_modules/")
+                || normalized.contains("/dist/")) {
+            return false;
+        }
+        String suffix = FileUtil.getSuffix(normalized).toLowerCase();
+        return Set.of("html", "css", "js", "jsx", "ts", "tsx", "vue", "json", "md", "txt", "yml", "yaml")
+                .contains(suffix);
+    }
+
+    private void validateVersionFileRequest(AppVersionFileRequest request, boolean requireContent) {
+        ThrowUtils.throwIf(request == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(StrUtil.isBlank(request.getFilePath()), ErrorCode.PARAMS_ERROR, "文件路径不能为空");
+        if (requireContent) {
+            ThrowUtils.throwIf(request.getContent() == null, ErrorCode.PARAMS_ERROR, "文件内容不能为空");
+            ThrowUtils.throwIf(request.getContent().length() > 2 * 1024 * 1024,
+                    ErrorCode.PARAMS_ERROR, "文件内容过大，无法在线保存");
+        }
+    }
+
+    private AppVersionVO toAppVersionVO(AppVersion version) {
+        AppVersionVO vo = new AppVersionVO();
+        BeanUtil.copyProperties(version, vo);
+        return vo;
     }
 
     /**

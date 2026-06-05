@@ -1,85 +1,82 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
-import HelloWorld from './components/HelloWorld.vue'
+import BasicLayout from '@/layouts/BasicLayout.vue'
+import zhCN from 'ant-design-vue/es/locale/zh_CN'
+import dayjs from 'dayjs'
+import 'dayjs/locale/zh-cn'
+import { healthCheck } from '@/api/healthController'
+
+dayjs.locale('zh-cn')
+healthCheck()
 </script>
 
 <template>
-  <header>
-    <img alt="Vue logo" class="logo" src="@/assets/logo.svg" width="125" height="125" />
-
-    <div class="wrapper">
-      <HelloWorld msg="You did it!" />
-
-      <nav>
-        <RouterLink to="/">Home</RouterLink>
-        <RouterLink to="/about">About</RouterLink>
-      </nav>
-    </div>
-  </header>
-
-  <RouterView />
+  <a-config-provider
+    :locale="zhCN"
+    :theme="{
+      token: {
+        colorPrimary: '#5b5cf0',
+        colorInfo: '#5b5cf0',
+        colorSuccess: '#12a594',
+        colorText: '#182230',
+        colorTextSecondary: '#667085',
+        colorBgLayout: '#f7f8fc',
+        borderRadius: 10,
+        borderRadiusLG: 16,
+        controlHeight: 38,
+        fontFamily: 'Inter, \'SF Pro Display\', \'PingFang SC\', \'Microsoft YaHei\', sans-serif',
+      },
+    }"
+  >
+    <BasicLayout />
+  </a-config-provider>
 </template>
 
-<style scoped>
-header {
-  line-height: 1.5;
-  max-height: 100vh;
+<style>
+:root {
+  --color-brand: #5b5cf0;
+  --color-brand-dark: #4748d8;
+  --color-brand-soft: #eeefff;
+  --color-title: #182230;
+  --color-text: #475467;
+  --color-muted: #98a2b3;
+  --color-line: #eaecf0;
+  --color-surface: #ffffff;
+  --color-page: #f7f8fc;
+  --shadow-card: 0 12px 32px rgb(16 24 40 / 6%);
+  --shadow-float: 0 24px 64px rgb(16 24 40 / 12%);
+  --page-width: 1240px;
 }
 
-.logo {
-  display: block;
-  margin: 0 auto 2rem;
+* {
+  box-sizing: border-box;
 }
 
-nav {
-  width: 100%;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 2rem;
+html {
+  scroll-behavior: smooth;
 }
 
-nav a.router-link-exact-active {
+body {
+  min-width: 320px;
+  margin: 0;
   color: var(--color-text);
+  background: var(--color-page);
+  font-family: Inter, 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-nav a.router-link-exact-active:hover {
-  background-color: transparent;
+a {
+  color: inherit;
+  text-decoration: none;
 }
 
-nav a {
-  display: inline-block;
-  padding: 0 1rem;
-  border-left: 1px solid var(--color-border);
+button,
+input,
+textarea {
+  font: inherit;
 }
 
-nav a:first-of-type {
-  border: 0;
-}
-
-@media (min-width: 1024px) {
-  header {
-    display: flex;
-    place-items: center;
-    padding-right: calc(var(--section-gap) / 2);
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  nav {
-    text-align: left;
-    margin-left: -1rem;
-    font-size: 1rem;
-
-    padding: 1rem 0;
-    margin-top: 1rem;
-  }
+::selection {
+  color: #fff;
+  background: var(--color-brand);
 }
 </style>

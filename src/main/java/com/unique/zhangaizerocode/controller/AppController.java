@@ -27,6 +27,7 @@ import com.unique.zhangaizerocode.service.UserService;
 
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpHeaders;
@@ -76,7 +77,7 @@ public class AppController {
         BeanUtil.copyProperties(appAddRequest, app);
         app.setUserId(loginUser.getId());
 
-        // 应用名
+        // 根据初始化提示词生成简洁的应用名称；AI 调用失败时会自动回退为本地名称。
         String appName = aiCodeGeneratorFacade.generateAppName(initPrompt);
         app.setAppName(appName);
         String codeGenType = appAddRequest.getCodeGenType();
@@ -312,10 +313,16 @@ public class AppController {
      * @param request 请求对象
      * @return 生成结果流
      */
-    @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @GetMapping(
+            value = "/chat/gen/code",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
-                                                       HttpServletRequest request) {
+                                                       HttpServletRequest request,
+                                                       HttpServletResponse response) {
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
         return Flux.defer(() -> {
                     // 参数校验
                     ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
@@ -333,6 +340,10 @@ public class AppController {
                             .data(jsonData)
                             .build();
                 })
+                .concatWith(Flux.just(ServerSentEvent.<String>builder()
+                        .event("done")
+                        .data("{}")
+                        .build()))
                 .onErrorResume(error -> {
                     /*
                      * 这个接口的响应类型是 text/event-stream。
@@ -353,6 +364,18 @@ public class AppController {
                             .build());
                 });
     }
+    /**
+     * 构建应用临时预览，不写入正式部署信息
+     */
+    @PostMapping("/preview")
+    public BaseResponse<String> previewApp(@RequestBody AppDeployRequest appDeployRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(appDeployRequest == null, ErrorCode.PARAMS_ERROR);
+        Long appId = appDeployRequest.getAppId();
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        User loginUser = userService.getLoginUser(request);
+        return ResultUtils.success(appService.previewApp(appId, loginUser));
+    }
+
     /**
      * 应用部署
      *

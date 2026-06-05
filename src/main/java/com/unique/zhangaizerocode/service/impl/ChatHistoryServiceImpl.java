@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * 对话历史 服务层实现。
@@ -63,6 +64,18 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         QueryWrapper queryWrapper = QueryWrapper.create()
                 .eq("appId", appId);
+        return this.remove(queryWrapper);
+    }
+
+    @Override
+    public boolean deleteAppChatHistory(Long appId, User loginUser) {
+        checkAppChatHistoryAuth(appId, loginUser, "无权删除该应用的对话历史");
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .eq(ChatHistory::getAppId, appId);
+        long count = this.count(queryWrapper);
+        if (count <= 0) {
+            return true;
+        }
         return this.remove(queryWrapper);
     }
 
@@ -113,13 +126,7 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
                                                       User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         ThrowUtils.throwIf(pageSize <= 0 || pageSize > 50, ErrorCode.PARAMS_ERROR, "页面大小必须在1-50之间");
-        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
-        // 验证权限：只有应用创建者和管理员可以查看
-        App app = appService.getById(appId);
-        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        boolean isAdmin = UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole());
-        boolean isCreator = app.getUserId().equals(loginUser.getId());
-        ThrowUtils.throwIf(!isAdmin && !isCreator, ErrorCode.NO_AUTH_ERROR, "无权查看该应用的对话历史");
+        checkAppChatHistoryAuth(appId, loginUser, "无权查看该应用的对话历史");
         // 构建查询条件
         ChatHistoryQueryRequest queryRequest = new ChatHistoryQueryRequest();
         queryRequest.setAppId(appId);
@@ -127,6 +134,15 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         QueryWrapper queryWrapper = this.getQueryWrapper(queryRequest);
         // 查询数据
         return this.page(Page.of(1, pageSize), queryWrapper);
+    }
+
+    private void checkAppChatHistoryAuth(Long appId, User loginUser, String errorMessage) {
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
+        App app = appService.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        boolean isAdmin = UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole());
+        boolean isCreator = Objects.equals(app.getUserId(), loginUser.getId());
+        ThrowUtils.throwIf(!isAdmin && !isCreator, ErrorCode.NO_AUTH_ERROR, errorMessage);
     }
 
     @Override

@@ -52,6 +52,18 @@ public class ChatHistoryController {
         Page<ChatHistory> result = chatHistoryService.listAppChatHistoryByPage(appId, pageSize, lastCreateTime, loginUser);
         return ResultUtils.success(result);
     }
+
+    /**
+     * 清空某个应用的全部对话历史
+     */
+    @DeleteMapping("/app/{appId}")
+    public BaseResponse<Boolean> deleteAppChatHistory(@PathVariable Long appId,
+                                                      HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        boolean result = chatHistoryService.deleteAppChatHistory(appId, loginUser);
+        return ResultUtils.success(result);
+    }
+
     /**
      * 管理员分页查询所有对话历史
      *

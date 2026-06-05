@@ -71,13 +71,6 @@ public class StaticResourceController {
                 return ResponseEntity.badRequest().build();
             }
 
-            // 临时打印，方便排查
-            System.out.println("部署根目录：" + DEPLOY_ROOT_DIR);
-            System.out.println("deployKey：" + deployKey);
-            System.out.println("resourcePath：" + resourcePath);
-            System.out.println("最终文件路径：" + targetFile.getAbsolutePath());
-            System.out.println("文件是否存在：" + targetFile.exists());
-
             if (!targetFile.exists() || !targetFile.isFile()) {
                 return ResponseEntity.notFound().build();
             }

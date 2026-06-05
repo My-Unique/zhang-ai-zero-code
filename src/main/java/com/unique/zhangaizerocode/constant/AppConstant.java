@@ -25,6 +25,11 @@ public interface AppConstant {
     /**
      * 应用部署域名
      */
-    String CODE_DEPLOY_HOST = "http://localhost";
+    String CODE_DEPLOY_HOST = "http://localhost:8123/api/static";
+
+    /**
+     * 临时预览目录前缀。预览不会写入应用的正式 deployKey。
+     */
+    String PREVIEW_KEY_PREFIX = "preview_";
 
 }
