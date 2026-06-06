@@ -13,12 +13,16 @@ import com.unique.zhangaizerocode.common.ResultUtils;
 import com.unique.zhangaizerocode.constant.AppConstant;
 import com.unique.zhangaizerocode.constant.UserConstant;
 import com.unique.zhangaizerocode.core.AiCodeGeneratorFacade;
+import com.unique.zhangaizerocode.core.generation.AppGenerationTaskManager;
+import com.unique.zhangaizerocode.core.generation.GenerationStreamEvent;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.exception.ThrowUtils;
 import com.unique.zhangaizerocode.model.dto.app.*;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.User;
+import com.unique.zhangaizerocode.model.enums.AppGenerationStatusEnum;
+import com.unique.zhangaizerocode.model.enums.AppVisibilityEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.model.vo.AppVO;
 import com.unique.zhangaizerocode.service.AppService;
@@ -63,6 +67,8 @@ public class AppController {
     private AppVersionService appVersionService;
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
+    @Resource
+    private AppGenerationTaskManager appGenerationTaskManager;
 
     @PostMapping("/add")
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
@@ -91,6 +97,9 @@ public class AppController {
 
         // 重点：刚创建 app 时还没有任何代码版本，所以当前版本号是 0
         app.setVersionNo(0L);
+        app.setDeployedVersionNo(0L);
+        app.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
+        app.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
 
         boolean result = appService.save(app);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
@@ -212,7 +221,10 @@ public class AppController {
         long pageNum = appQueryRequest.getPageNum();
         // 只查询精选的应用
         appQueryRequest.setPriority(AppConstant.GOOD_APP_PRIORITY);
-        QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
+        appQueryRequest.setVisibility(AppVisibilityEnum.PUBLIC.getValue());
+        QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest)
+                .isNotNull("deployKey")
+                .ne("deployKey", "");
         // 分页查询
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
         // 数据封装
@@ -260,6 +272,9 @@ public class AppController {
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
         App app = new App();
         BeanUtil.copyProperties(appAdminUpdateRequest, app);
+        if (AppConstant.GOOD_APP_PRIORITY.equals(appAdminUpdateRequest.getPriority())) {
+            app.setVisibility(AppVisibilityEnum.PUBLIC.getValue());
+        }
         // 设置编辑时间
         app.setEditTime(LocalDateTime.now());
         boolean result = appService.updateById(app);
@@ -330,7 +345,18 @@ public class AppController {
                     // 获取当前登录用户
                     User loginUser = userService.getLoginUser(request);
                     // 调用服务生成代码（流式）
-                    return appService.chatToGenCode(appId, message, loginUser);
+                    return appGenerationTaskManager.start(
+                            appId,
+                            () -> appService.chatToGenCode(appId, message, loginUser)
+                    ).flatMap(event -> {
+                        if ("error".equals(event.event())) {
+                            return Flux.error(new BusinessException(ErrorCode.SYSTEM_ERROR, event.data()));
+                        }
+                        if ("done".equals(event.event())) {
+                            return Flux.empty();
+                        }
+                        return Flux.just(event.data());
+                    });
                 })
                 .map(chunk -> {
                     // 将内容包装成JSON对象
@@ -367,6 +393,55 @@ public class AppController {
     /**
      * 构建应用临时预览，不写入正式部署信息
      */
+    @GetMapping(
+            value = "/chat/gen/code/stream",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public Flux<ServerSentEvent<String>> streamGeneratingCode(@RequestParam Long appId,
+                                                             HttpServletRequest request,
+                                                             HttpServletResponse response) {
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
+        return Flux.defer(() -> {
+                    ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
+                    User loginUser = userService.getLoginUser(request);
+                    App app = appService.getById(appId);
+                    ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+                    if (!app.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole())) {
+                        throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限访问该应用");
+                    }
+                    return appGenerationTaskManager.subscribe(appId)
+                            .flatMap(event -> {
+                                if ("error".equals(event.event())) {
+                                    return Flux.error(new BusinessException(ErrorCode.SYSTEM_ERROR, event.data()));
+                                }
+                                if ("done".equals(event.event())) {
+                                    return Flux.empty();
+                                }
+                                return Flux.just(event.data());
+                            });
+                })
+                .map(chunk -> {
+                    Map<String, String> wrapper = Map.of("d", chunk);
+                    String jsonData = JSONUtil.toJsonStr(wrapper);
+                    return ServerSentEvent.<String>builder()
+                            .data(jsonData)
+                            .build();
+                })
+                .concatWith(Flux.just(ServerSentEvent.<String>builder()
+                        .event("done")
+                        .data("{}")
+                        .build()))
+                .onErrorResume(error -> {
+                    Map<String, String> wrapper = Map.of("e", error.getMessage());
+                    String jsonData = JSONUtil.toJsonStr(wrapper);
+                    return Flux.just(ServerSentEvent.<String>builder()
+                            .event("error")
+                            .data(jsonData)
+                            .build());
+                });
+    }
+
     @PostMapping("/preview")
     public BaseResponse<String> previewApp(@RequestBody AppDeployRequest appDeployRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appDeployRequest == null, ErrorCode.PARAMS_ERROR);
@@ -393,6 +468,31 @@ public class AppController {
         // 调用服务部署应用
         String deployUrl = appService.deployApp(appId, loginUser);
         return ResultUtils.success(deployUrl);
+    }
+
+    /**
+     * 应用下线
+     */
+    @PostMapping("/undeploy")
+    public BaseResponse<Boolean> undeployApp(@RequestBody AppDeployRequest appDeployRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(appDeployRequest == null, ErrorCode.PARAMS_ERROR);
+        Long appId = appDeployRequest.getAppId();
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        User loginUser = userService.getLoginUser(request);
+        return ResultUtils.success(appService.undeployApp(appId, loginUser));
+    }
+
+    /**
+     * 用户主动停止应用生成
+     */
+    @PostMapping("/generation/stop")
+    public BaseResponse<Boolean> stopGeneration(@RequestBody AppDeployRequest appDeployRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(appDeployRequest == null, ErrorCode.PARAMS_ERROR);
+        Long appId = appDeployRequest.getAppId();
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        User loginUser = userService.getLoginUser(request);
+        appGenerationTaskManager.stop(appId);
+        return ResultUtils.success(appService.stopGeneration(appId, loginUser));
     }
 
 

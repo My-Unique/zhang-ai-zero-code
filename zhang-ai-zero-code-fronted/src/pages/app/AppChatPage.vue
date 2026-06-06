@@ -18,16 +18,25 @@
 
       <div class="header-actions">
         <a-button
-          :disabled="!previewUrl || generating || previewBuilding || deploying"
+          :disabled="!previewUrl || generating || previewBuilding || deploying || undeploying"
           @click="refreshPreview"
         >
           <ReloadOutlined />
           刷新预览
         </a-button>
         <a-button
+          v-if="appInfo.deployKey"
+          danger
+          :loading="undeploying"
+          :disabled="generating || previewBuilding || deploying"
+          @click="undeploy"
+        >
+          下线应用
+        </a-button>
+        <a-button
           type="primary"
           :loading="deploying"
-          :disabled="generating || previewBuilding || (appInfo.versionNo || 0) <= 0"
+          :disabled="generating || previewBuilding || undeploying || (appInfo.versionNo || 0) <= 0"
           @click="deploy()"
         >
           <CloudUploadOutlined />
@@ -38,26 +47,39 @@
 
     <main class="studio-workspace">
       <section class="chat-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="panel-label">AI COPILOT</span>
+        <div class="panel-heading chat-heading">
+          <div class="chat-title">
             <h2>创作对话</h2>
+            <a-tag class="chat-count-tag" color="blue">{{ chatRoundCount }} 轮</a-tag>
           </div>
           <div class="panel-actions">
-            <a-button
-              danger
-              size="small"
-              type="text"
-              :disabled="generating || historyLoading || !messages.length"
-              :loading="clearingHistory"
-              @click="clearChatHistory"
-            >
-              <DeleteOutlined />
-              清空对话
-            </a-button>
-            <a-tag :color="generating ? 'processing' : 'default'">
+            <a-tag class="status-tag" :color="generating ? 'processing' : 'default'">
               {{ generating ? '生成中' : generationError ? '生成失败' : '等待指令' }}
             </a-tag>
+            <a-tooltip title="导出 Markdown">
+              <a-button
+                class="panel-icon-button"
+                size="small"
+                type="text"
+                :disabled="generating || historyLoading || chatRoundCount <= 0"
+                :loading="exportingHistory"
+                @click="exportChatHistory"
+              >
+                <DownloadOutlined />
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="清空对话">
+              <a-button
+                class="panel-icon-button danger"
+                size="small"
+                type="text"
+                :disabled="generating || historyLoading || !messages.length"
+                :loading="clearingHistory"
+                @click="clearChatHistory"
+              >
+                <DeleteOutlined />
+              </a-button>
+            </a-tooltip>
           </div>
         </div>
 
@@ -104,6 +126,10 @@
                 class="message-content"
                 :class="{ typing: generating && item.key === activeAiMessageKey && !item.content }"
               >
+                <details v-if="item.thinking" class="thinking-block" open>
+                  <summary>思考过程</summary>
+                  <p>{{ item.thinking }}</p>
+                </details>
                 <ChatMessageContent v-if="item.content" :content="item.content" />
                 <span v-else-if="generating && item.key === activeAiMessageKey" class="typing-dots">
                   <i></i>
@@ -132,9 +158,15 @@
                 <span><CodeOutlined /> 支持详细页面需求</span>
                 <span>Ctrl + Enter 发送</span>
               </div>
-              <a-button type="primary" shape="circle" :loading="generating" @click="sendMessage">
+              <a-button
+                type="primary"
+                :shape="generating ? undefined : 'circle'"
+                :class="{ 'pause-generate-button': generating }"
+                @click="generating ? stopGeneration() : sendMessage()"
+              >
                 <template #icon>
-                  <ArrowUpOutlined />
+                  <span v-if="generating" class="stop-square-icon"></span>
+                  <ArrowUpOutlined v-else />
                 </template>
               </a-button>
             </div>
@@ -181,7 +213,7 @@
               <a-button
                 type="text"
                 shape="circle"
-                :disabled="!previewUrl || generating || deploying"
+                :disabled="!previewUrl || generating || previewBuilding || deploying"
                 @click="refreshPreview"
               >
                 <ReloadOutlined />
@@ -226,7 +258,7 @@
             </div>
             <div class="address-bar">
               <LockOutlined />
-              <span>{{ previewReady ? previewUrl : '应用生成完成后将自动展示' }}</span>
+              <span>{{ previewAddressText }}</span>
             </div>
             <MoreOutlined />
           </div>
@@ -238,19 +270,27 @@
             <span class="preview-scale">{{ Math.round(previewScale * 100) }}%</span>
           </div>
           <div v-else class="preview-empty">
-            <div class="preview-visual" :class="{ generating }">
-              <a-spin v-if="generating" size="large" />
+            <div class="preview-visual" :class="{ generating: generating || previewBuilding }">
+              <a-spin v-if="generating || previewBuilding" size="large" />
               <ExclamationCircleOutlined v-else-if="generationError" />
               <LayoutOutlined v-else />
             </div>
             <h3>
               {{
-                generating ? '正在构建你的应用' : generationError ? '应用生成失败' : '等待开始创作'
+                previewBuilding
+                  ? '正在准备应用预览'
+                  : generating
+                    ? '正在构建你的应用'
+                    : generationError
+                      ? '应用生成失败'
+                      : '等待开始创作'
               }}
             </h3>
             <p>
               {{
-                generating
+                previewBuilding
+                  ? '项目已经生成，正在构建临时预览地址，通常需要几秒钟。'
+                  : generating
                   ? 'AI 正在编写页面与样式，完成后会自动刷新预览。'
                   : generationError
                     ? generationError
@@ -260,12 +300,12 @@
             <a-button v-if="generationError" class="retry-button" @click="restoreFailedMessage">
               重新编辑需求
             </a-button>
-            <div v-if="generating" class="progress-steps">
+            <div v-if="generating || previewBuilding" class="progress-steps">
               <span class="done">理解需求</span>
               <i></i>
-              <span class="active">生成代码</span>
+              <span :class="{ done: previewBuilding, active: generating }">生成代码</span>
               <i></i>
-              <span>渲染预览</span>
+              <span :class="{ active: previewBuilding }">渲染预览</span>
             </div>
           </div>
         </div>
@@ -277,11 +317,15 @@
         <span><CheckCircleFilled /></span>
         <h3>应用已成功部署</h3>
         <p>现在可以通过以下地址访问并分享你的应用。</p>
-        <a-input-group compact>
-          <a-input :value="deployUrl" readonly style="width: calc(100% - 168px)" />
-          <a-button @click="copyDeployUrl">复制链接</a-button>
-          <a-button type="primary" :href="deployUrl" target="_blank">访问应用</a-button>
-        </a-input-group>
+        <div class="deploy-link-box">
+          <a-input :value="deployUrl" readonly />
+          <div class="deploy-link-actions">
+            <a-button @click="copyDeployUrl">复制链接</a-button>
+            <a-button class="visit-app-button" type="primary" :href="deployUrl" target="_blank">
+              访问应用
+            </a-button>
+          </div>
+        </div>
       </div>
     </a-modal>
   </div>
@@ -299,6 +343,7 @@ import {
   CodeOutlined,
   DeleteOutlined,
   DesktopOutlined,
+  DownloadOutlined,
   ExclamationCircleOutlined,
   ExportOutlined,
   LayoutOutlined,
@@ -306,9 +351,16 @@ import {
   MoreOutlined,
   ReloadOutlined,
   RobotOutlined,
+  RollbackOutlined,
 } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { deployApp, getAppVoById, previewApp } from '@/api/appController'
+import {
+  deployApp,
+  getAppVoById,
+  previewApp,
+  stopGeneration as stopAppGeneration,
+  undeployApp,
+} from '@/api/appController'
 import { deleteAppChatHistory, listAppChatHistory } from '@/api/chatHistoryController'
 import ChatMessageContent from '@/components/ChatMessageContent.vue'
 import VersionCodeWorkspace from '@/components/VersionCodeWorkspace.vue'
@@ -320,7 +372,13 @@ type ChatMessage = {
   key: string
   type: 'user' | 'ai'
   content: string
+  thinking?: string
   createTime?: string
+}
+
+type StreamChunk = {
+  content: string
+  thinking: string
 }
 
 const route = useRoute()
@@ -333,6 +391,7 @@ const inputMessage = ref('')
 const generating = ref(false)
 const previewBuilding = ref(false)
 const deploying = ref(false)
+const undeploying = ref(false)
 const deployModalOpen = ref(false)
 const deployUrl = ref('')
 const generatedPreviewUrl = ref('')
@@ -347,11 +406,14 @@ const messageListRef = ref<HTMLElement>()
 const previewViewportRef = ref<HTMLElement>()
 const historyLoading = ref(false)
 const clearingHistory = ref(false)
+const exportingHistory = ref(false)
 const hasMoreHistory = ref(false)
 const lastCreateTime = ref<string>()
 let eventSource: EventSource | undefined
 let lastSentMessage = ''
 let streamSucceeded = false
+let generationStoppedByUser = false
+let pageLeftDuringGeneration = false
 let typewriterTimer: ReturnType<typeof setInterval> | undefined
 let typewriterQueue: string[] = []
 let typewriterCursor = 0
@@ -363,6 +425,10 @@ let previewResizeObserver: ResizeObserver | undefined
 
 const suggestions = ['增加一个现代化首页', '优化页面配色和间距', '添加联系我们表单']
 const userAvatar = computed(() => loginUserStore.loginUser.userAvatar || defaultAvatar)
+const chatRoundCount = computed(() => {
+  const loadedCount = messages.value.filter((item) => item.type === 'user').length
+  return Math.max(appInfo.value.chatCount ?? 0, loadedCount)
+})
 const previewUrl = computed(() => {
   if (historicalPreviewUrl.value) {
     return historicalPreviewUrl.value
@@ -377,6 +443,18 @@ const previewUrl = computed(() => {
     return `http://localhost:8123/api/static/${appInfo.value.deployKey}/`
   }
   return ''
+})
+const previewAddressText = computed(() => {
+  if (previewReady.value && previewUrl.value) {
+    return previewUrl.value
+  }
+  if (previewBuilding.value) {
+    return '正在构建临时预览...'
+  }
+  if ((appInfo.value.versionNo || 0) > 0) {
+    return '应用已生成，等待预览地址'
+  }
+  return '应用生成完成后将自动展示'
 })
 const previewScale = ref(1)
 const previewFrameHeight = ref(PREVIEW_MIN_HEIGHT)
@@ -479,6 +557,111 @@ const loadMoreHistory = () => {
   loadHistory(true)
 }
 
+const escapeMarkdown = (content: string) => {
+  return content.replace(/\r\n/g, '\n').trim()
+}
+
+const formatExportTime = (time?: string) => {
+  return time ? new Date(time).toLocaleString('zh-CN') : ''
+}
+
+const buildChatMarkdown = (historyMessages: ChatMessage[]) => {
+  const title = appInfo.value.appName || '应用对话记录'
+  const lines = [
+    `# ${title} - 对话记录`,
+    '',
+    `- 应用 ID: ${appId}`,
+    `- 对话轮次: ${historyMessages.filter((item) => item.type === 'user').length}`,
+    `- 导出时间: ${new Date().toLocaleString('zh-CN')}`,
+    '',
+  ]
+
+  historyMessages.forEach((item, index) => {
+    lines.push(`## ${index + 1}. ${item.type === 'user' ? '用户' : 'AI'}`)
+    if (item.createTime) {
+      lines.push(`时间: ${formatExportTime(item.createTime)}`)
+      lines.push('')
+    }
+    lines.push(escapeMarkdown(item.content || ''))
+    lines.push('')
+  })
+
+  return `${lines.join('\n')}\n`
+}
+
+const downloadTextFile = (content: string, filename: string) => {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+const sanitizeFilename = (name: string) => {
+  return name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'app-chat-history'
+}
+
+const fetchAllChatHistoryForExport = async () => {
+  const pageSize = 50
+  let cursor: string | undefined
+  const allRecords: API.ChatHistory[] = []
+
+  while (true) {
+    const res = await listAppChatHistory({
+      appId,
+      pageSize,
+      lastCreateTime: cursor,
+    })
+    const records = res.data.data?.records ?? []
+    allRecords.push(...records)
+    if (records.length < pageSize) {
+      break
+    }
+    cursor = records[records.length - 1]?.createTime
+    if (!cursor) {
+      break
+    }
+  }
+
+  return allRecords
+    .reverse()
+    .map(
+      (item, index): ChatMessage => ({
+        key: `export-${item.id || index}`,
+        type: item.messageType === 'user' ? 'user' : 'ai',
+        content: item.message || '',
+        createTime: item.createTime,
+      }),
+    )
+}
+
+const exportChatHistory = async () => {
+  if (exportingHistory.value || chatRoundCount.value <= 0) {
+    return
+  }
+  exportingHistory.value = true
+  try {
+    const historyMessages = await fetchAllChatHistoryForExport()
+    if (!historyMessages.length) {
+      message.warning('暂无可导出的对话记录')
+      return
+    }
+    const markdown = buildChatMarkdown(historyMessages)
+    const filename = `${sanitizeFilename(appInfo.value.appName || `app-${appId}`)}-对话记录.md`
+    downloadTextFile(markdown, filename)
+    message.success('对话记录已导出')
+  } catch (error) {
+    console.error('导出对话记录失败：', error)
+    message.error('导出对话记录失败')
+  } finally {
+    exportingHistory.value = false
+  }
+}
+
 const clearChatHistory = () => {
   if (!appId || generating.value || clearingHistory.value) {
     return
@@ -497,6 +680,7 @@ const clearChatHistory = () => {
           throw new Error(res.data.message || '清空对话失败')
         }
         messages.value = []
+        appInfo.value.chatCount = 0
         lastCreateTime.value = undefined
         hasMoreHistory.value = false
         message.success('对话已清空')
@@ -528,15 +712,46 @@ const addNotGeneratedReply = async () => {
   await scrollToBottom()
 }
 
-const parseSseData = (raw: string) => {
+const getStringField = (value: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const fieldValue = value[key]
+    if (typeof fieldValue === 'string') {
+      return fieldValue
+    }
+  }
+  return ''
+}
+
+const parseSseChunk = (raw: string): StreamChunk => {
   if (!raw || raw === '[DONE]') {
-    return ''
+    return { content: '', thinking: '' }
   }
   try {
     const value = JSON.parse(raw)
-    return typeof value === 'string' ? value : value.d || value.content || value.data || ''
+    if (typeof value === 'string') {
+      return { content: value, thinking: '' }
+    }
+    if (!value || typeof value !== 'object') {
+      return { content: '', thinking: '' }
+    }
+
+    const data = (value as Record<string, unknown>).data
+    const dataContent = typeof data === 'string' ? data : ''
+    const record = value as Record<string, unknown>
+    return {
+      content:
+        getStringField(record, ['d', 'content', 'text', 'message', 'answer']) || dataContent,
+      thinking: getStringField(record, [
+        'partialThinking',
+        'thinking',
+        'reasoning',
+        'reasoningContent',
+        'reasoning_content',
+        'thought',
+      ]),
+    }
   } catch {
-    return raw
+    return { content: raw, thinking: '' }
   }
 }
 
@@ -611,11 +826,18 @@ const waitForTypewriter = () => {
 }
 
 const finishGeneration = async (aiMessage: ChatMessage, errorText = '') => {
+  if (generationStoppedByUser) {
+    return
+  }
   eventSource?.close()
   eventSource = undefined
   await waitForTypewriter()
   generating.value = false
   activeAiMessageKey.value = ''
+
+  if (pageLeftDuringGeneration) {
+    return
+  }
 
   if (streamSucceeded && !errorText) {
     generationError.value = ''
@@ -638,6 +860,65 @@ const restoreFailedMessage = () => {
   inputMessage.value = lastSentMessage
 }
 
+const handleGenerationStreamError = async (aiMessage: ChatMessage, event: Event, url: string) => {
+  const errorText = parseSseError(event)
+  if (url.includes('/chat/gen/code/stream')) {
+    await loadApp()
+    if ((appInfo.value.versionNo || 0) > 0 || appInfo.value.generationStatus === 'succeeded') {
+      streamSucceeded = true
+      await finishGeneration(aiMessage)
+      return
+    }
+    if (appInfo.value.generationStatus === 'generating') {
+      eventSource?.close()
+      eventSource = undefined
+      await waitForTypewriter()
+      generating.value = false
+      activeAiMessageKey.value = ''
+      generationError.value = ''
+      aiMessage.content += '\n\n[系统] 生成仍在后台处理中，暂时无法接收实时进度，请稍后刷新查看结果。'
+      await scrollToBottom()
+      return
+    }
+  }
+  await finishGeneration(aiMessage, errorText)
+}
+
+const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
+  const isReconnectStream = url.includes('/chat/gen/code/stream')
+  eventSource?.close()
+  eventSource = new EventSource(url, { withCredentials: true })
+  eventSource.onmessage = (event) => {
+    const chunk = parseSseChunk(event.data)
+    if (chunk.thinking) {
+      aiMessage.thinking = `${aiMessage.thinking || ''}${chunk.thinking}`
+      scrollToBottom()
+    }
+    if (isReconnectStream) {
+      aiMessage.content += chunk.content
+      scrollToBottom()
+    } else {
+      enqueueTypewriterText(aiMessage, chunk.content)
+    }
+    if (chunk.content.includes('版本保存完成')) {
+      streamSucceeded = true
+    }
+  }
+  eventSource.addEventListener('done', async () => {
+    if (generationStoppedByUser) {
+      return
+    }
+    streamSucceeded = true
+    await finishGeneration(aiMessage)
+  })
+  eventSource.onerror = async (event) => {
+    if (generationStoppedByUser) {
+      return
+    }
+    await handleGenerationStreamError(aiMessage, event, url)
+  }
+}
+
 const sendMessage = () => {
   const content = inputMessage.value.trim()
   if (!content || generating.value) {
@@ -647,6 +928,8 @@ const sendMessage = () => {
   inputMessage.value = ''
   lastSentMessage = content
   streamSucceeded = false
+  generationStoppedByUser = false
+  pageLeftDuringGeneration = false
   generationError.value = ''
   resetTypewriter()
   messages.value.push({
@@ -667,21 +950,66 @@ const sendMessage = () => {
   scrollToBottom()
 
   const url = `http://localhost:8123/api/app/chat/gen/code?appId=${appId}&message=${encodeURIComponent(content)}`
-  eventSource = new EventSource(url, { withCredentials: true })
-  eventSource.onmessage = (event) => {
-    const chunk = parseSseData(event.data)
-    enqueueTypewriterText(aiMessage, chunk)
-    if (chunk.includes('版本保存完成')) {
-      streamSucceeded = true
-    }
+  bindGenerationEventSource(url, aiMessage)
+}
+
+const reconnectGeneration = async () => {
+  if (generating.value) {
+    return
   }
-  eventSource.addEventListener('done', async () => {
-    streamSucceeded = true
-    await finishGeneration(aiMessage)
+
+  streamSucceeded = false
+  generationStoppedByUser = false
+  pageLeftDuringGeneration = false
+  generationError.value = ''
+  resetTypewriter()
+
+  const aiMessage = reactive<ChatMessage>({
+    key: `ai-reconnect-${Date.now()}`,
+    type: 'ai',
+    content: '',
   })
-  eventSource.onerror = async (event) => {
-    await finishGeneration(aiMessage, parseSseError(event))
+  activeAiMessageKey.value = aiMessage.key
+  messages.value.push(aiMessage)
+  generating.value = true
+  previewReady.value = false
+  await scrollToBottom()
+
+  const url = `http://localhost:8123/api/app/chat/gen/code/stream?appId=${appId}`
+  bindGenerationEventSource(url, aiMessage)
+}
+
+const stopGeneration = async () => {
+  if (!generating.value) {
+    return
   }
+
+  generationStoppedByUser = true
+  try {
+    await stopAppGeneration({ appId })
+  } catch (error) {
+    console.warn('停止生成状态更新失败：', error)
+  } finally {
+    eventSource?.close()
+    eventSource = undefined
+    resetTypewriter()
+  }
+
+  const activeAiMessage = messages.value.find((item) => item.key === activeAiMessageKey.value)
+  if (activeAiMessage) {
+    const stopText = '[系统] 已手动停止生成，本次不会保存新版本。'
+    activeAiMessage.content = activeAiMessage.content
+      ? `${activeAiMessage.content}\n\n${stopText}`
+      : stopText
+  }
+
+  generating.value = false
+  activeAiMessageKey.value = ''
+  streamSucceeded = false
+  generationError.value = '已手动停止生成'
+  previewReady.value = false
+  message.warning('已停止生成')
+  await scrollToBottom()
 }
 
 const refreshPreview = () => {
@@ -754,7 +1082,7 @@ const showCurrentPreview = async () => {
 }
 
 const deploy = async () => {
-  if (generating.value || previewBuilding.value || deploying.value) {
+  if (generating.value || previewBuilding.value || deploying.value || undeploying.value) {
     return
   }
   deploying.value = true
@@ -777,6 +1105,39 @@ const deploy = async () => {
   } finally {
     deploying.value = false
   }
+}
+
+const undeploy = () => {
+  if (generating.value || previewBuilding.value || deploying.value || undeploying.value) {
+    return
+  }
+
+  Modal.confirm({
+    title: '确认下线应用？',
+    content: '下线后外部访问地址会失效，应用源码和历史版本仍然保留。',
+    okText: '下线',
+    cancelText: '取消',
+    okButtonProps: { danger: true },
+    async onOk() {
+      undeploying.value = true
+      try {
+        const res = await undeployApp({ appId })
+        if (res.data.code !== 0 || !res.data.data) {
+          throw new Error(res.data.message || '下线失败')
+        }
+        deployUrl.value = ''
+        appInfo.value.deployKey = ''
+        appInfo.value.deployedVersionNo = 0
+        await loadApp()
+        message.success('应用已下线')
+      } catch (error) {
+        const errorText = error instanceof Error ? error.message : '下线失败'
+        message.error(errorText)
+      } finally {
+        undeploying.value = false
+      }
+    },
+  })
 }
 
 const copyDeployUrl = async () => {
@@ -804,6 +1165,11 @@ onMounted(async () => {
     (item) => item.type === 'user' && item.content.trim() === initPrompt,
   )
 
+  if (!shouldAutoSend && appInfo.value.generationStatus === 'generating') {
+    await reconnectGeneration()
+    return
+  }
+
   if (shouldAutoSend && initPrompt && !initPromptAlreadySent) {
     inputMessage.value = initPrompt
     sendMessage()
@@ -818,9 +1184,15 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  eventSource?.close()
+  if (generating.value) {
+    pageLeftDuringGeneration = true
+  } else {
+    eventSource?.close()
+  }
   previewResizeObserver?.disconnect()
-  resetTypewriter()
+  if (!generating.value) {
+    resetTypewriter()
+  }
 })
 </script>
 
@@ -936,9 +1308,15 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  height: 64px;
-  padding: 0 18px;
+  min-height: 58px;
+  padding: 0 14px 0 18px;
   border-bottom: 1px solid #f0f1f4;
+}
+
+.panel-heading > div:first-child,
+.preview-heading > div:first-child {
+  flex-shrink: 0;
+  min-width: max-content;
 }
 
 .panel-label {
@@ -954,12 +1332,73 @@ onBeforeUnmount(() => {
   margin: 3px 0 0;
   color: #182230;
   font-size: 14px;
+  white-space: nowrap;
+}
+
+.chat-heading {
+  gap: 12px;
+}
+
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-title h2 {
+  margin: 0;
+}
+
+.chat-count-tag,
+.status-tag {
+  margin-inline-end: 0;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.status-tag {
+  color: #667085;
+  background: #f8fafc;
 }
 
 .panel-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.panel-icon-button {
+  display: inline-grid;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #475467;
+  border-radius: 8px;
+  place-items: center;
+}
+
+.panel-icon-button:hover {
+  color: #4f50d8;
+  background: #f3f3ff;
+}
+
+.panel-icon-button.danger {
+  color: #d92d20;
+}
+
+.panel-icon-button.danger:hover {
+  color: #b42318;
+  background: #fff4f3;
+}
+
+.panel-icon-button :deep(.anticon) {
+  font-size: 15px;
 }
 
 .message-list {
@@ -1075,6 +1514,29 @@ onBeforeUnmount(() => {
   min-width: 48px;
 }
 
+.thinking-block {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  color: #667085;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.thinking-block summary {
+  color: #475467;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.thinking-block p {
+  margin: 7px 0 0;
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 .typing-dots {
   display: inline-flex;
   align-items: center;
@@ -1157,6 +1619,40 @@ onBeforeUnmount(() => {
   box-shadow: none;
   font-size: 11px;
   resize: none;
+}
+
+.composer .pause-generate-button {
+  display: inline-grid;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: #6f63f6;
+  border-radius: 50%;
+  background: #6f63f6;
+  place-items: center;
+}
+
+.composer .pause-generate-button:hover,
+.composer .pause-generate-button:focus {
+  border-color: #5f54e8;
+  background: #5f54e8;
+}
+
+.composer .pause-generate-button :deep(.ant-btn-icon) {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  place-items: center;
+}
+
+.stop-square-icon {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
 }
 
 .composer-footer,
@@ -1429,6 +1925,38 @@ onBeforeUnmount(() => {
   margin: 0 0 20px;
   color: #98a2b3;
   font-size: 11px;
+}
+
+.deploy-link-box {
+  display: grid;
+  gap: 12px;
+}
+
+.deploy-link-box :deep(.ant-input) {
+  height: 38px;
+  color: #475467;
+  border-color: #e4e7ec;
+  border-radius: 999px;
+  background: #fafbfc;
+  text-align: center;
+}
+
+.deploy-link-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.deploy-link-actions :deep(.ant-btn) {
+  min-width: 104px;
+  height: 40px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.visit-app-button {
+  padding-inline: 24px;
+  box-shadow: 0 8px 18px rgb(91 92 240 / 22%);
 }
 
 @media (max-width: 900px) {

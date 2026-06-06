@@ -17,11 +17,11 @@
         <FilterOutlined />
         <span>筛选条件</span>
       </div>
-      <a-form layout="inline" :model="query" class="filter-form" @finish="search">
+      <a-form layout="vertical" :model="query" class="filter-form" @finish="search">
         <a-form-item label="应用 ID">
           <a-input v-model:value="query.id" allow-clear placeholder="输入 ID" />
         </a-form-item>
-        <a-form-item label="应用名称">
+        <a-form-item label="应用名称" class="filter-item-wide">
           <a-input v-model:value="query.appName" allow-clear placeholder="输入应用名称" />
         </a-form-item>
         <a-form-item label="用户 ID">
@@ -38,14 +38,8 @@
         <a-form-item label="优先级">
           <a-input-number v-model:value="query.priority" :min="0" placeholder="输入优先级" />
         </a-form-item>
-        <a-form-item label="部署标识">
+        <a-form-item label="部署标识" class="filter-item-wide">
           <a-input v-model:value="query.deployKey" allow-clear placeholder="输入部署标识" />
-        </a-form-item>
-        <a-form-item label="封面地址">
-          <a-input v-model:value="query.cover" allow-clear placeholder="输入封面地址" />
-        </a-form-item>
-        <a-form-item label="初始提示词">
-          <a-input v-model:value="query.initPrompt" allow-clear placeholder="输入提示词关键词" />
         </a-form-item>
         <a-form-item class="filter-actions">
           <a-button @click="resetQuery">重置</a-button>
@@ -101,6 +95,9 @@
             <a-tag :color="record.priority === 99 ? 'gold' : 'default'">
               {{ record.priority === 99 ? '精选' : (record.priority ?? 0) }}
             </a-tag>
+          </template>
+          <template v-else-if="column.dataIndex === 'chatCount'">
+            <a-tag color="blue">{{ record.chatCount || 0 }} 轮</a-tag>
           </template>
           <template v-else-if="column.dataIndex === 'createTime'">
             {{ formatTime(record.createTime) }}
@@ -184,6 +181,7 @@ const columns = [
   { title: '应用', dataIndex: 'cover', width: 250 },
   { title: '生成类型', dataIndex: 'codeGenType', width: 120 },
   { title: '用户 ID', dataIndex: 'userId', width: 110 },
+  { title: '对话轮次', dataIndex: 'chatCount', width: 110 },
   { title: '优先级', dataIndex: 'priority', width: 100 },
   { title: '部署标识', dataIndex: 'deployKey', width: 180, ellipsis: true },
   { title: '创建时间', dataIndex: 'createTime', width: 190 },
@@ -230,8 +228,6 @@ const resetQuery = () => {
     codeGenType: undefined,
     priority: undefined,
     deployKey: undefined,
-    cover: undefined,
-    initPrompt: undefined,
   })
   fetchApps()
 }
@@ -243,7 +239,7 @@ const tableChange = (page: { current?: number; pageSize?: number }) => {
 }
 
 const feature = async (app: API.AppVO) => {
-  const res = await updateAppByAdmin({ id: app.id, priority: 99 })
+  const res = await updateAppByAdmin({ id: app.id, priority: 99, visibility: 'public' })
   if (res.data.code === 0) {
     message.success('已设为精选应用')
     fetchApps()
@@ -374,16 +370,48 @@ h1 {
 }
 
 .filter-form {
-  row-gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 14px 18px;
+  align-items: end;
 }
 
 .filter-form :deep(.ant-form-item) {
-  margin-right: 12px;
-  margin-bottom: 0;
+  margin: 0;
+}
+
+.filter-form :deep(.ant-form-item-label) {
+  padding-bottom: 6px;
+}
+
+.filter-form :deep(.ant-form-item-label > label) {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filter-form :deep(.ant-input),
+.filter-form :deep(.ant-input-number),
+.filter-form :deep(.ant-select) {
+  width: 100%;
+}
+
+.filter-item-wide {
+  grid-column: span 2;
 }
 
 .filter-actions {
-  margin-left: auto;
+  grid-column: 3 / 5;
+}
+
+.filter-actions :deep(.ant-form-item-control-input-content) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.filter-actions :deep(.ant-btn) {
+  min-width: 92px;
 }
 
 .table-panel {
@@ -463,6 +491,23 @@ h1 {
   .admin-page {
     width: calc(100% - 28px);
     padding-top: 30px;
+  }
+
+  .filter-form {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-item-wide,
+  .filter-actions {
+    grid-column: span 1;
+  }
+
+  .filter-actions :deep(.ant-form-item-control-input-content) {
+    justify-content: stretch;
+  }
+
+  .filter-actions :deep(.ant-btn) {
+    flex: 1;
   }
 
   .page-header {

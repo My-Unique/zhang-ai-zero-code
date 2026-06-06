@@ -44,6 +44,21 @@ public class AppVO implements Serializable {
     private LocalDateTime deployedTime;
 
     /**
+     * 已部署版本号
+     */
+    private Long deployedVersionNo;
+
+    /**
+     * 生成状态：not_generated/generating/succeeded/failed
+     */
+    private String generationStatus;
+
+    /**
+     * 可见范围：private/public
+     */
+    private String visibility;
+
+    /**
      * 优先级
      */
     private Integer priority;
@@ -67,6 +82,11 @@ public class AppVO implements Serializable {
      * 当前代码版本号，版本号大于 0 表示应用已经生成过。
      */
     private Long versionNo;
+
+    /**
+     * 对话轮次，按用户消息数统计
+     */
+    private Long chatCount;
 
     /**
      * 创建用户信息

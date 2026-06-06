@@ -27,7 +27,7 @@
       </div>
 
       <div class="cover-topbar">
-        <span class="type-tag">{{ app.codeGenType || 'AI 应用' }}</span>
+        <span class="type-tag">{{ formatCodeGenType(app.codeGenType) }}</span>
         <span v-if="featured" class="featured-tag">
           <StarFilled />
           精选
@@ -106,6 +106,10 @@
           <a-avatar :size="24" :src="app.user?.userAvatar || defaultAvatar" />
           <span>{{ app.user?.userName || ownerLabel }}</span>
         </a-space>
+        <span class="chat-count">
+          <MessageOutlined />
+          {{ app.chatCount || 0 }} 轮
+        </span>
         <span>{{ formatTime(app.createTime) }}</span>
       </div>
     </div>
@@ -123,6 +127,7 @@ import {
   StarFilled,
 } from '@ant-design/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
+import { formatCodeGenType } from '@/utils/codeGenType'
 
 const props = withDefaults(
   defineProps<{
@@ -435,10 +440,18 @@ p {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding-top: 12px;
   color: #98a2b3;
   font-size: 11px;
   border-top: 1px solid #f0f1f4;
+}
+
+.chat-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #667085;
 }
 
 .deploy-status {

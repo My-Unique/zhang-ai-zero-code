@@ -38,6 +38,10 @@ public interface AppService extends IService<App> {
 
     String deployApp(Long appId, User loginUser);
 
+    Boolean undeployApp(Long appId, User loginUser);
+
+    Boolean stopGeneration(Long appId, User loginUser);
+
     List<AppVersionVO> listAppVersions(Long appId, HttpServletRequest httpServletRequest);
 
     Boolean rollbackVersion(AppRollbackVersionRequest request, HttpServletRequest httpServletRequest);

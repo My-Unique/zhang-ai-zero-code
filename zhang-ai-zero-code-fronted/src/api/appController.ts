@@ -110,6 +110,30 @@ export async function deployApp(body: API.AppDeployRequest, options?: { [key: st
   })
 }
 
+/** 应用下线 POST /app/undeploy */
+export async function undeployApp(body: API.AppDeployRequest, options?: { [key: string]: any }) {
+  return request<API.BaseResponseBoolean>('/app/undeploy', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
+/** 用户主动停止应用生成 POST /app/generation/stop */
+export async function stopGeneration(body: API.AppDeployRequest, options?: { [key: string]: any }) {
+  return request<API.BaseResponseBoolean>('/app/generation/stop', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
 /** 构建应用临时预览，不会正式部署应用 POST /app/preview */
 export async function previewApp(body: API.AppDeployRequest, options?: { [key: string]: any }) {
   return request<API.BaseResponseString>('/app/preview', {

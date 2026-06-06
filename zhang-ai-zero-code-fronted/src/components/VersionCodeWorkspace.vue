@@ -83,13 +83,49 @@
 
       <a-spin :spinning="loadingFile || loadingDiff">
         <div v-if="diffVisible" class="diff-view">
-          <section>
-            <header>v{{ previousVersionNo }}</header>
-            <pre>{{ diffData.oldCode || '该版本不存在此文件' }}</pre>
+          <section class="diff-pane">
+            <header>
+              <div>
+                <strong>v{{ previousVersionNo }}</strong>
+                <span class="diff-stat removed">{{ removalCount }} removals</span>
+              </div>
+              <a-button type="text" size="small" @click="copyDiffCode(diffData.oldCode || '')">
+                Copy
+              </a-button>
+            </header>
+            <div class="diff-code">
+              <div
+                v-for="(row, index) in diffRows"
+                :key="`old-${index}`"
+                class="diff-line"
+                :class="{ removed: row.type === 'remove', blank: row.type === 'add' }"
+              >
+                <span class="line-no">{{ row.oldLineNo || '' }}</span>
+                <code>{{ row.oldText }}</code>
+              </div>
+            </div>
           </section>
-          <section>
-            <header>v{{ selectedVersionNo }}</header>
-            <pre>{{ diffData.newCode || '该版本不存在此文件' }}</pre>
+          <section class="diff-pane">
+            <header>
+              <div>
+                <strong>v{{ selectedVersionNo }}</strong>
+                <span class="diff-stat added">{{ additionCount }} additions</span>
+              </div>
+              <a-button type="text" size="small" @click="copyDiffCode(diffData.newCode || '')">
+                Copy
+              </a-button>
+            </header>
+            <div class="diff-code">
+              <div
+                v-for="(row, index) in diffRows"
+                :key="`new-${index}`"
+                class="diff-line"
+                :class="{ added: row.type === 'add', blank: row.type === 'remove' }"
+              >
+                <span class="line-no">{{ row.newLineNo || '' }}</span>
+                <code>{{ row.newText }}</code>
+              </div>
+            </div>
           </section>
         </div>
         <div v-else-if="!selectedFile" class="code-empty">
@@ -203,6 +239,14 @@ type FileTreeNode = {
   children?: FileTreeNode[]
 }
 
+type DiffRow = {
+  type: 'equal' | 'remove' | 'add'
+  oldLineNo?: number
+  newLineNo?: number
+  oldText: string
+  newText: string
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
 const startResize = (event: PointerEvent) => {
@@ -275,7 +319,128 @@ const canCompare = computed(() =>
   Boolean(selectedFile.value && selectedVersionNo.value && previousVersionNo.value),
 )
 
+const splitCodeLines = (code?: string) => {
+  if (!code) {
+    return []
+  }
+  return code.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+}
+
+const buildFallbackDiffRows = (oldLines: string[], newLines: string[]): DiffRow[] => {
+  const rowCount = Math.max(oldLines.length, newLines.length)
+  const rows: DiffRow[] = []
+  for (let index = 0; index < rowCount; index += 1) {
+    const oldText = oldLines[index]
+    const newText = newLines[index]
+    if (oldText === newText) {
+      rows.push({
+        type: 'equal',
+        oldLineNo: oldText === undefined ? undefined : index + 1,
+        newLineNo: newText === undefined ? undefined : index + 1,
+        oldText: oldText || '',
+        newText: newText || '',
+      })
+    } else {
+      if (oldText !== undefined) {
+        rows.push({ type: 'remove', oldLineNo: index + 1, oldText, newText: '' })
+      }
+      if (newText !== undefined) {
+        rows.push({ type: 'add', newLineNo: index + 1, oldText: '', newText })
+      }
+    }
+  }
+  return rows
+}
+
+const buildDiffRows = (oldCode?: string, newCode?: string): DiffRow[] => {
+  const oldLines = splitCodeLines(oldCode)
+  const newLines = splitCodeLines(newCode)
+  if (!oldLines.length && !newLines.length) {
+    return []
+  }
+  if (oldLines.length * newLines.length > 200_000) {
+    return buildFallbackDiffRows(oldLines, newLines)
+  }
+
+  const dp = Array.from({ length: oldLines.length + 1 }, () =>
+    Array<number>(newLines.length + 1).fill(0),
+  )
+
+  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+      dp[oldIndex][newIndex] =
+        oldLines[oldIndex] === newLines[newIndex]
+          ? dp[oldIndex + 1][newIndex + 1] + 1
+          : Math.max(dp[oldIndex + 1][newIndex], dp[oldIndex][newIndex + 1])
+    }
+  }
+
+  const rows: DiffRow[] = []
+  let oldIndex = 0
+  let newIndex = 0
+  while (oldIndex < oldLines.length && newIndex < newLines.length) {
+    if (oldLines[oldIndex] === newLines[newIndex]) {
+      rows.push({
+        type: 'equal',
+        oldLineNo: oldIndex + 1,
+        newLineNo: newIndex + 1,
+        oldText: oldLines[oldIndex],
+        newText: newLines[newIndex],
+      })
+      oldIndex += 1
+      newIndex += 1
+    } else if (dp[oldIndex + 1][newIndex] >= dp[oldIndex][newIndex + 1]) {
+      rows.push({
+        type: 'remove',
+        oldLineNo: oldIndex + 1,
+        oldText: oldLines[oldIndex],
+        newText: '',
+      })
+      oldIndex += 1
+    } else {
+      rows.push({
+        type: 'add',
+        newLineNo: newIndex + 1,
+        oldText: '',
+        newText: newLines[newIndex],
+      })
+      newIndex += 1
+    }
+  }
+
+  while (oldIndex < oldLines.length) {
+    rows.push({
+      type: 'remove',
+      oldLineNo: oldIndex + 1,
+      oldText: oldLines[oldIndex],
+      newText: '',
+    })
+    oldIndex += 1
+  }
+
+  while (newIndex < newLines.length) {
+    rows.push({
+      type: 'add',
+      newLineNo: newIndex + 1,
+      oldText: '',
+      newText: newLines[newIndex],
+    })
+    newIndex += 1
+  }
+
+  return rows
+}
+
+const diffRows = computed(() => buildDiffRows(diffData.value.oldCode, diffData.value.newCode))
+const removalCount = computed(() => diffRows.value.filter((row) => row.type === 'remove').length)
+const additionCount = computed(() => diffRows.value.filter((row) => row.type === 'add').length)
+
 const formatTime = (time?: string) => (time ? new Date(time).toLocaleString('zh-CN') : '-')
+
+const copyDiffCode = async (code: string) => {
+  await navigator.clipboard.writeText(code)
+  message.success('代码已复制')
+}
 
 const getRequestErrorText = (error: unknown) => {
   const requestError = error as {
@@ -807,37 +972,128 @@ onBeforeUnmount(() => stopResize?.())
   grid-template-columns: 1fr 1fr;
   height: 100%;
   min-height: 0;
-  background: #101828;
+  background: #fff;
 }
 
-.diff-view section {
+.diff-pane {
   display: flex;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  border-right: 1px solid #344054;
+  border-right: 1px solid #e4e7ec;
 }
 
-.diff-view header {
+.diff-pane header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex-shrink: 0;
-  padding: 7px 12px;
-  color: #d0d5dd;
-  font-size: 9px;
-  border-bottom: 1px solid #344054;
-  background: #1d2939;
+  min-height: 42px;
+  padding: 8px 12px;
+  color: #344054;
+  font-size: 11px;
+  border-bottom: 1px solid #eaecf0;
+  background: #fff;
 }
 
-.diff-view pre {
+.diff-pane header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.diff-pane header strong {
+  color: #344054;
+  font-size: 12px;
+}
+
+.diff-stat {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+}
+
+.diff-stat.removed {
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.diff-stat.added {
+  color: #067647;
+  background: #dcfae6;
+}
+
+.diff-code {
   flex: 1;
   min-height: 0;
   margin: 0;
-  padding: 14px;
-  overflow: auto;
-  color: #d0d5dd;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #344054;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 10px;
-  line-height: 1.65;
-  white-space: pre;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  background: #fff;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  width: 100%;
+  min-height: 22px;
+  align-items: stretch;
+}
+
+.diff-line .line-no {
+  padding: 0 10px 0 8px;
+  color: #98a2b3;
+  text-align: right;
+  user-select: none;
+  background: #f8f9fc;
+  border-right: 1px solid #eef0f4;
+}
+
+.diff-line code {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0 12px;
+  color: inherit;
+  font-family: inherit;
+  background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.diff-line.removed {
+  color: #7a271a;
+  background: #fff1f0;
+}
+
+.diff-line.removed .line-no {
+  color: #b42318;
+  background: #fee4e2;
+}
+
+.diff-line.added {
+  color: #054f31;
+  background: #edfcf2;
+}
+
+.diff-line.added .line-no {
+  color: #067647;
+  background: #dcfae6;
+}
+
+.diff-line.blank {
+  background: #fff;
 }
 
 @media (max-width: 1200px) {

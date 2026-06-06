@@ -78,9 +78,16 @@
                 />
               </a-form-item>
 
+              <a-form-item label="可见范围" extra="公开应用才允许进入精选列表；私有应用只对创建者和管理员可见。">
+                <a-radio-group v-model:value="form.visibility">
+                  <a-radio value="private">私有</a-radio>
+                  <a-radio value="public">公开</a-radio>
+                </a-radio-group>
+              </a-form-item>
+
               <a-alert
                 message="精选应用设置"
-                description="将优先级设置为 99，可把该应用设置为精选应用。"
+                description="将应用设为公开，并把优先级设置为 99，可把已部署应用加入精选列表。"
                 type="info"
                 show-icon
               />
@@ -92,7 +99,7 @@
 
             <div class="readonly-grid">
               <a-form-item label="生成类型" extra="生成类型不可修改。">
-                <a-input :value="appDetail.codeGenType || '-'" disabled />
+                <a-input :value="formatCodeGenType(appDetail.codeGenType)" disabled />
               </a-form-item>
               <a-form-item label="部署标识" extra="部署标识不可修改。">
                 <a-input :value="appDetail.deployKey || '尚未部署'" disabled />
@@ -166,6 +173,7 @@ import { message } from 'ant-design-vue'
 import { getAppVoById, getAppVoByIdByAdmin, updateApp, updateAppByAdmin } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import ACCESS_ENUM from '@/accessEnum'
+import { formatCodeGenType } from '@/utils/codeGenType'
 
 const route = useRoute()
 const router = useRouter()
@@ -178,6 +186,7 @@ const form = reactive<API.AppAdminUpdateRequest>({
   id: appId,
   appName: '',
   cover: '',
+  visibility: 'private',
   priority: 0,
 })
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === ACCESS_ENUM.ADMIN)
@@ -207,6 +216,7 @@ const loadApp = async () => {
       id: appId,
       appName: res.data.data.appName,
       cover: res.data.data.cover,
+      visibility: res.data.data.visibility || 'private',
       priority: res.data.data.priority,
     })
   } finally {
@@ -222,6 +232,7 @@ const save = async () => {
           id: appId,
           appName: form.appName,
           cover: form.cover,
+          visibility: form.visibility,
           priority: form.priority,
         })
       : await updateApp({ id: appId, appName: form.appName })

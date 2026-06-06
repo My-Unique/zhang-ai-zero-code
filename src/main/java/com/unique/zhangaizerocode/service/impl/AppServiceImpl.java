@@ -8,6 +8,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.query.QueryWrapper;
+import com.mybatisflex.core.update.UpdateChain;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessage;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessageTypeEnum;
@@ -27,6 +28,8 @@ import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.model.entity.ChatHistory;
 import com.unique.zhangaizerocode.model.entity.User;
+import com.unique.zhangaizerocode.model.enums.AppGenerationStatusEnum;
+import com.unique.zhangaizerocode.model.enums.AppVisibilityEnum;
 import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.model.vo.AppVO;
@@ -90,7 +93,40 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             UserVO userVO = userService.getUserVO(user);
             appVO.setUser(userVO);
         }
+        normalizeAppVOState(app, appVO);
+        appVO.setChatCount(countAppChatRounds(app.getId()));
         return appVO;
+    }
+
+    private void normalizeAppVOState(App app, AppVO appVO) {
+        Long versionNo = app.getVersionNo();
+        if (StrUtil.isBlank(appVO.getVisibility())) {
+            appVO.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
+        }
+        if (versionNo != null && versionNo > 0) {
+            String generationStatus = appVO.getGenerationStatus();
+            if (StrUtil.isBlank(generationStatus)
+                    || AppGenerationStatusEnum.NOT_GENERATED.getValue().equals(generationStatus)) {
+                appVO.setGenerationStatus(AppGenerationStatusEnum.SUCCEEDED.getValue());
+            }
+        } else if (StrUtil.isBlank(appVO.getGenerationStatus())) {
+            appVO.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
+        }
+        if (StrUtil.isBlank(app.getDeployKey())) {
+            appVO.setDeployedVersionNo(0L);
+        } else if ((appVO.getDeployedVersionNo() == null || appVO.getDeployedVersionNo() <= 0)
+                && versionNo != null && versionNo > 0) {
+            appVO.setDeployedVersionNo(versionNo);
+        }
+    }
+
+    private long countAppChatRounds(Long appId) {
+        if (appId == null) {
+            return 0;
+        }
+        return chatHistoryService.count(QueryWrapper.create()
+                .eq(ChatHistory::getAppId, appId)
+                .eq(ChatHistory::getMessageType, ChatHistoryMessageTypeEnum.USER.getValue()));
     }
 
     @Override
@@ -104,6 +140,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String initPrompt = appQueryRequest.getInitPrompt();
         String codeGenType = appQueryRequest.getCodeGenType();
         String deployKey = appQueryRequest.getDeployKey();
+        Long deployedVersionNo = appQueryRequest.getDeployedVersionNo();
+        String generationStatus = appQueryRequest.getGenerationStatus();
+        String visibility = appQueryRequest.getVisibility();
         Integer priority = appQueryRequest.getPriority();
         Long userId = appQueryRequest.getUserId();
         String sortField = appQueryRequest.getSortField();
@@ -115,6 +154,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .like("initPrompt", initPrompt)
                 .eq("codeGenType", codeGenType)
                 .eq("deployKey", deployKey)
+                .eq("deployedVersionNo", deployedVersionNo)
+                .eq("generationStatus", generationStatus)
+                .eq("visibility", visibility)
                 .eq("priority", priority)
                 .eq("userId", userId)
                 .orderBy(sortField, "ascend".equals(sortOrder));
@@ -162,6 +204,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String codePath = AppConstant.CODE_OUTPUT_ROOT_DIR
                 + File.separator + codeGenTypeEnum.getValue() + "_" + appId
                 + File.separator + "v" + newVersionNo;
+        updateGenerationStatus(appId, AppGenerationStatusEnum.GENERATING);
 
         /*
          * 生成新版本前，先准备一个完整的新版本目录。
@@ -225,10 +268,26 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     log.info("AI 代码生成版本保存完成，appId: {}, versionNo: {}", appId, newVersionNo);
                     return "\n\n[系统] 版本保存完成，可进行部署。\n\n";
                 }))
-                .doOnError(error -> log.error("AI 代码生成或保存版本失败，appId: {}, versionNo: {}",
-                        appId, newVersionNo, error))
-                .doFinally(signalType -> log.info("AI 代码生成请求结束，appId: {}, versionNo: {}, signal: {}",
-                        appId, newVersionNo, signalType));
+                .doOnError(error -> {
+                    updateGenerationStatus(appId, AppGenerationStatusEnum.FAILED);
+                    log.error("AI 代码生成或保存版本失败，appId: {}, versionNo: {}",
+                            appId, newVersionNo, error);
+                })
+                .doFinally(signalType -> {
+                    log.info("AI 代码生成请求结束，appId: {}, versionNo: {}, signal: {}",
+                            appId, newVersionNo, signalType);
+                });
+    }
+
+    private void updateGenerationStatus(Long appId, AppGenerationStatusEnum status) {
+        App updateApp = new App();
+        updateApp.setId(appId);
+        updateApp.setGenerationStatus(status.getValue());
+        updateApp.setEditTime(LocalDateTime.now());
+        boolean updateResult = this.updateById(updateApp);
+        if (!updateResult) {
+            log.warn("更新应用生成状态失败，appId: {}, status: {}", appId, status.getValue());
+        }
     }
 
     private String buildCodeGenerationMessage(App app,
@@ -495,6 +554,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         updateApp.setId(appId);
         updateApp.setCurrentVersionId(appVersion.getId());
         updateApp.setVersionNo(versionNo);
+        updateApp.setGenerationStatus(AppGenerationStatusEnum.SUCCEEDED.getValue());
         updateApp.setEditTime(LocalDateTime.now());
 
         boolean updateResult = this.updateById(updateApp);
@@ -555,6 +615,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         updateApp.setId(appId);
         updateApp.setDeployKey(deployKey);
         updateApp.setDeployedTime(LocalDateTime.now());
+        updateApp.setDeployedVersionNo(versionNo);
 
         boolean updateResult = this.updateById(updateApp);
         ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
@@ -562,8 +623,45 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         // 同步当前对象，避免同一请求链路后续继续读取部署前的旧状态。
         app.setDeployKey(deployKey);
         app.setDeployedTime(updateApp.getDeployedTime());
+        app.setDeployedVersionNo(versionNo);
 
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Boolean undeployApp(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
+
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+
+        if (!app.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser)) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限下线该应用");
+        }
+
+        deleteDeployDir(app.getDeployKey());
+
+        boolean updateResult = UpdateChain.of(getMapper())
+                .set("deployKey", null, true)
+                .set("deployedTime", null, true)
+                .set("deployedVersionNo", 0L, true)
+                .set("editTime", LocalDateTime.now(), true)
+                .eq("id", appId)
+                .update();
+        ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用下线信息失败");
+        return true;
+    }
+
+    @Override
+    public Boolean stopGeneration(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
+        App app = this.getById(appId);
+        checkAppAuth(app, loginUser);
+        updateGenerationStatus(appId, AppGenerationStatusEnum.FAILED);
+        return true;
     }
 
 
@@ -624,6 +722,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             App deployUpdateApp = new App();
             deployUpdateApp.setId(appId);
             deployUpdateApp.setDeployedTime(LocalDateTime.now());
+            deployUpdateApp.setDeployedVersionNo(appVersion.getVersionNo());
 
             boolean deployUpdateResult = this.updateById(deployUpdateApp);
             ThrowUtils.throwIf(!deployUpdateResult, ErrorCode.OPERATION_ERROR, "更新部署时间失败");
@@ -864,8 +963,40 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             return false;
         }
 
+        App app = this.getById(appId);
+        cleanupAppFiles(app, appId);
         chatHistoryService.deleteByAppId(appId);
         appVersionService.deleteByAppId(appId);
         return super.removeById(id);
+    }
+
+    private void cleanupAppFiles(App app, Long appId) {
+        try {
+            if (app != null && StrUtil.isNotBlank(app.getCodeGenType())) {
+                FileUtil.del(new File(AppConstant.CODE_OUTPUT_ROOT_DIR,
+                        app.getCodeGenType() + "_" + appId));
+            }
+            if (app != null) {
+                deleteDeployDir(app.getDeployKey());
+            }
+            deleteDeployDir(AppConstant.PREVIEW_KEY_PREFIX + appId);
+            File deployRoot = new File(AppConstant.CODE_DEPLOY_ROOT_DIR);
+            File[] versionPreviewDirs = deployRoot.listFiles(file ->
+                    file.isDirectory() && file.getName().startsWith(AppConstant.PREVIEW_KEY_PREFIX + appId + "_v"));
+            if (versionPreviewDirs != null) {
+                for (File previewDir : versionPreviewDirs) {
+                    FileUtil.del(previewDir);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("清理应用文件失败，appId: {}", appId, e);
+        }
+    }
+
+    private void deleteDeployDir(String deployKey) {
+        if (StrUtil.isBlank(deployKey)) {
+            return;
+        }
+        FileUtil.del(new File(AppConstant.CODE_DEPLOY_ROOT_DIR, deployKey));
     }
 }

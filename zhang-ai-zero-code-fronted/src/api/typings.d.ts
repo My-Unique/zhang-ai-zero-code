@@ -8,6 +8,7 @@ declare namespace API {
     id?: string
     appName?: string
     cover?: string
+    visibility?: string
     priority?: number
   }
 
@@ -26,6 +27,9 @@ declare namespace API {
     initPrompt?: string
     codeGenType?: string
     deployKey?: string
+    deployedVersionNo?: number
+    generationStatus?: string
+    visibility?: string
     priority?: number
     userId?: number
   }
@@ -100,11 +104,15 @@ declare namespace API {
     codeGenType?: string
     deployKey?: string
     deployedTime?: string
+    deployedVersionNo?: number
+    generationStatus?: string
+    visibility?: string
     priority?: number
     userId?: number
     createTime?: string
     updateTime?: string
     versionNo?: number
+    chatCount?: number
     user?: UserVO
   }
 
