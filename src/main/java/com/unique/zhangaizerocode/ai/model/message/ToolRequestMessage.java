@@ -15,13 +15,20 @@ public class ToolRequestMessage extends StreamMessage {
 
     private String id;
 
+    private Integer index;
+
     private String name;
 
     private String arguments;
 
     public ToolRequestMessage(ToolExecutionRequest toolExecutionRequest) {
+        this(null, toolExecutionRequest);
+    }
+
+    public ToolRequestMessage(Integer index, ToolExecutionRequest toolExecutionRequest) {
         super(StreamMessageTypeEnum.TOOL_REQUEST.getValue());
         this.id = toolExecutionRequest.id();
+        this.index = index;
         this.name = toolExecutionRequest.name();
         this.arguments = toolExecutionRequest.arguments();
     }

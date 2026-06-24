@@ -83,7 +83,7 @@
           </div>
         </div>
 
-        <div ref="messageListRef" class="message-list">
+        <div ref="messageListRef" class="message-list" @scroll.passive="handleMessageListScroll">
           <a-button
             v-if="hasMoreHistory"
             type="link"
@@ -407,6 +407,7 @@ const previewViewportRef = ref<HTMLElement>()
 const historyLoading = ref(false)
 const clearingHistory = ref(false)
 const exportingHistory = ref(false)
+const autoScrollToBottom = ref(true)
 const hasMoreHistory = ref(false)
 const lastCreateTime = ref<string>()
 let eventSource: EventSource | undefined
@@ -421,9 +422,21 @@ let typewriterScrollCounter = 0
 const typewriterDoneResolvers: Array<() => void> = []
 const PREVIEW_DESKTOP_WIDTH = 1440
 const PREVIEW_MIN_HEIGHT = 900
+const MESSAGE_BOTTOM_THRESHOLD = 80
 let previewResizeObserver: ResizeObserver | undefined
 
 const suggestions = ['增加一个现代化首页', '优化页面配色和间距', '添加联系我们表单']
+const codeGenerationFormatInstruction = [
+  '',
+  '---',
+  '代码输出格式要求：',
+  '1. 严格按照“一个文件一个代码块”输出：每个文件先输出工具调用说明，例如：[工具调用] 写入文件 src/App.vue，然后只跟这个文件自己的一个 Markdown 代码块。',
+  '2. 每个文件的完整代码必须放进独立 Markdown 代码围栏中，格式必须是 ```vue、```html、```css、```ts、```js 等语言标识开头，并用 ``` 结束。',
+  '3. 禁止把多个文件写进同一个代码块；禁止一个代码块中同时包含 src/App.vue、src/main.ts 等多个文件内容。',
+  '4. Vue 文件必须使用 Vue3 组合式 API 语法。',
+  '5. 不要输出裸露的 vue/html/css/js 代码；没有代码围栏的代码无法被系统正确解析。',
+  '6. appId 必须始终按字符串处理，不能转成 Number。',
+].join('\n')
 const userAvatar = computed(() => loginUserStore.loginUser.userAvatar || defaultAvatar)
 const chatRoundCount = computed(() => {
   const loadedCount = messages.value.filter((item) => item.type === 'user').length
@@ -489,10 +502,26 @@ const observePreviewViewport = async () => {
   previewResizeObserver.observe(previewViewportRef.value)
 }
 
-const scrollToBottom = async () => {
+const isMessageListNearBottom = () => {
+  const list = messageListRef.value
+  if (!list) {
+    return true
+  }
+  return list.scrollHeight - list.scrollTop - list.clientHeight <= MESSAGE_BOTTOM_THRESHOLD
+}
+
+const handleMessageListScroll = () => {
+  autoScrollToBottom.value = isMessageListNearBottom()
+}
+
+const scrollToBottom = async (force = false) => {
   await nextTick()
-  if (messageListRef.value) {
+  if (!messageListRef.value) {
+    return
+  }
+  if (force || autoScrollToBottom.value || isMessageListNearBottom()) {
     messageListRef.value.scrollTop = messageListRef.value.scrollHeight
+    autoScrollToBottom.value = true
   }
 }
 
@@ -531,7 +560,10 @@ const loadHistory = async (append = false) => {
       (item, index): ChatMessage => ({
         key: `history-${item.id || index}`,
         type: item.messageType === 'user' ? 'user' : 'ai',
-        content: item.message || '',
+        content:
+          item.messageType === 'user'
+            ? stripGenerationFormatInstruction(item.message || '')
+            : item.message || '',
         createTime: item.createTime,
       }),
     )
@@ -546,7 +578,7 @@ const loadHistory = async (append = false) => {
         messageListRef.value.scrollTop += messageListRef.value.scrollHeight - previousScrollHeight
       }
     } else {
-      await scrollToBottom()
+      await scrollToBottom(true)
     }
   } finally {
     historyLoading.value = false
@@ -633,7 +665,10 @@ const fetchAllChatHistoryForExport = async () => {
       (item, index): ChatMessage => ({
         key: `export-${item.id || index}`,
         type: item.messageType === 'user' ? 'user' : 'ai',
-        content: item.message || '',
+        content:
+          item.messageType === 'user'
+            ? stripGenerationFormatInstruction(item.message || '')
+            : item.message || '',
         createTime: item.createTime,
       }),
     )
@@ -709,7 +744,7 @@ const addNotGeneratedReply = async () => {
     type: 'ai',
     content: '这个应用还没有成功生成。请重新发送刚才的需求，或补充修改内容，我会继续为你生成应用。',
   })
-  await scrollToBottom()
+  await scrollToBottom(true)
 }
 
 const getStringField = (value: Record<string, unknown>, keys: string[]) => {
@@ -767,6 +802,13 @@ const parseSseError = (event: Event) => {
   }
 }
 
+const isGenerationTaskMissingError = (errorText: string) =>
+  errorText.includes('没有正在生成') ||
+  errorText.includes('没有正在生成的任务') ||
+  errorText.includes('任务不存在') ||
+  errorText.includes('no active') ||
+  errorText.includes('not found')
+
 const resolveTypewriterDone = () => {
   typewriterDoneResolvers.splice(0).forEach((resolve) => resolve())
 }
@@ -792,20 +834,21 @@ const startTypewriter = (aiMessage: ChatMessage) => {
   }
 
   typewriterTimer = setInterval(() => {
-    const nextCharacter = typewriterQueue[typewriterCursor]
-    if (nextCharacter === undefined) {
+    if (typewriterCursor >= typewriterQueue.length) {
       stopTypewriter()
       resolveTypewriterDone()
       return
     }
 
-    aiMessage.content += nextCharacter
-    typewriterCursor += 1
+    const batchSize = typewriterQueue.length - typewriterCursor > 3000 ? 120 : 50
+    const nextCursor = Math.min(typewriterCursor + batchSize, typewriterQueue.length)
+    aiMessage.content += typewriterQueue.slice(typewriterCursor, nextCursor).join('')
+    typewriterCursor = nextCursor
     typewriterScrollCounter += 1
-    if (typewriterScrollCounter % 6 === 0) {
+    if (typewriterScrollCounter % 2 === 0 || typewriterCursor >= typewriterQueue.length) {
       scrollToBottom()
     }
-  }, 12)
+  }, 16)
 }
 
 const enqueueTypewriterText = (aiMessage: ChatMessage, text: string) => {
@@ -860,9 +903,29 @@ const restoreFailedMessage = () => {
   inputMessage.value = lastSentMessage
 }
 
+const buildGenerationRequestMessage = (content: string) => {
+  return `${content.trim()}${codeGenerationFormatInstruction}`
+}
+
+const stripGenerationFormatInstruction = (content: string) => {
+  return content.endsWith(codeGenerationFormatInstruction)
+    ? content.slice(0, -codeGenerationFormatInstruction.length).trimEnd()
+    : content
+}
+
 const handleGenerationStreamError = async (aiMessage: ChatMessage, event: Event, url: string) => {
   const errorText = parseSseError(event)
   if (url.includes('/chat/gen/code/stream')) {
+    if (isGenerationTaskMissingError(errorText)) {
+      await loadApp()
+      if ((appInfo.value.versionNo || 0) > 0 || appInfo.value.generationStatus === 'succeeded') {
+        streamSucceeded = true
+        await finishGeneration(aiMessage)
+        return
+      }
+      await finishGeneration(aiMessage, '生成任务已结束或不存在，请重新发送需求。')
+      return
+    }
     await loadApp()
     if ((appInfo.value.versionNo || 0) > 0 || appInfo.value.generationStatus === 'succeeded') {
       streamSucceeded = true
@@ -870,14 +933,7 @@ const handleGenerationStreamError = async (aiMessage: ChatMessage, event: Event,
       return
     }
     if (appInfo.value.generationStatus === 'generating') {
-      eventSource?.close()
-      eventSource = undefined
-      await waitForTypewriter()
-      generating.value = false
-      activeAiMessageKey.value = ''
-      generationError.value = ''
-      aiMessage.content += '\n\n[系统] 生成仍在后台处理中，暂时无法接收实时进度，请稍后刷新查看结果。'
-      await scrollToBottom()
+      await finishGeneration(aiMessage, errorText || '实时生成连接中断，请刷新页面重连。')
       return
     }
   }
@@ -885,25 +941,32 @@ const handleGenerationStreamError = async (aiMessage: ChatMessage, event: Event,
 }
 
 const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
-  const isReconnectStream = url.includes('/chat/gen/code/stream')
   eventSource?.close()
   eventSource = new EventSource(url, { withCredentials: true })
-  eventSource.onmessage = (event) => {
+  const handleStreamMessage = (event: MessageEvent, immediate = false) => {
     const chunk = parseSseChunk(event.data)
     if (chunk.thinking) {
       aiMessage.thinking = `${aiMessage.thinking || ''}${chunk.thinking}`
       scrollToBottom()
     }
-    if (isReconnectStream) {
-      aiMessage.content += chunk.content
-      scrollToBottom()
-    } else {
-      enqueueTypewriterText(aiMessage, chunk.content)
+    if (chunk.content) {
+      if (immediate) {
+        aiMessage.content += chunk.content
+        scrollToBottom()
+      } else {
+        enqueueTypewriterText(aiMessage, chunk.content)
+      }
     }
     if (chunk.content.includes('版本保存完成')) {
       streamSucceeded = true
     }
   }
+  eventSource.onmessage = handleStreamMessage
+  eventSource.addEventListener('snapshot', (event) => {
+    if (event instanceof MessageEvent) {
+      handleStreamMessage(event, true)
+    }
+  })
   eventSource.addEventListener('done', async () => {
     if (generationStoppedByUser) {
       return
@@ -911,8 +974,20 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
     streamSucceeded = true
     await finishGeneration(aiMessage)
   })
+  eventSource.addEventListener('error', async (event) => {
+    if (generationStoppedByUser || !(event instanceof MessageEvent) || !event.data) {
+      return
+    }
+    await handleGenerationStreamError(aiMessage, event, url)
+  })
   eventSource.onerror = async (event) => {
     if (generationStoppedByUser) {
+      return
+    }
+    if (event instanceof MessageEvent && event.data) {
+      return
+    }
+    if (url.includes('/chat/gen/code/stream')) {
       return
     }
     await handleGenerationStreamError(aiMessage, event, url)
@@ -947,9 +1022,10 @@ const sendMessage = () => {
   messages.value.push(aiMessage)
   generating.value = true
   previewReady.value = false
-  scrollToBottom()
+  scrollToBottom(true)
 
-  const url = `http://localhost:8123/api/app/chat/gen/code?appId=${appId}&message=${encodeURIComponent(content)}`
+  const requestMessage = buildGenerationRequestMessage(content)
+  const url = `http://localhost:8123/api/app/chat/gen/code?appId=${appId}&message=${encodeURIComponent(requestMessage)}`
   bindGenerationEventSource(url, aiMessage)
 }
 
@@ -973,7 +1049,7 @@ const reconnectGeneration = async () => {
   messages.value.push(aiMessage)
   generating.value = true
   previewReady.value = false
-  await scrollToBottom()
+  await scrollToBottom(true)
 
   const url = `http://localhost:8123/api/app/chat/gen/code/stream?appId=${appId}`
   bindGenerationEventSource(url, aiMessage)

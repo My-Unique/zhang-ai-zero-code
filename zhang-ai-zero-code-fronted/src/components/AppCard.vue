@@ -1,30 +1,7 @@
 <template>
   <article class="app-card" :class="{ featured }" @click="handleCardClick">
     <div class="cover-wrap">
-      <div v-if="app.deployKey" class="live-cover">
-        <iframe
-          :src="deployedUrl"
-          :title="`${app.appName || '应用'}作品`"
-          loading="lazy"
-          tabindex="-1"
-        ></iframe>
-      </div>
-      <img v-else-if="app.cover" :src="app.cover" :alt="app.appName" class="cover" />
-      <div v-else class="cover-placeholder">
-        <div class="mock-browser">
-          <div class="mock-toolbar">
-            <i></i>
-            <i></i>
-            <i></i>
-          </div>
-          <div class="mock-content">
-            <span></span>
-            <strong></strong>
-            <p></p>
-            <div><i></i><i></i><i></i></div>
-          </div>
-        </div>
-      </div>
+      <img :src="coverImageSrc" :alt="app.appName || '应用封面'" class="cover" @error="handleCoverError" />
 
       <div class="cover-topbar">
         <span class="type-tag">{{ formatCodeGenType(app.codeGenType) }}</span>
@@ -117,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   DeleteOutlined,
   EditOutlined,
@@ -127,6 +104,7 @@ import {
   StarFilled,
 } from '@ant-design/icons-vue'
 import defaultAvatar from '@/assets/default-avatar.png'
+import defaultCover from '@/assets/default-cover.svg'
 import { formatCodeGenType } from '@/utils/codeGenType'
 
 const props = withDefaults(
@@ -143,8 +121,20 @@ const props = withDefaults(
   },
 )
 
-const deployedUrl = computed(() =>
-  props.app.deployKey ? `http://localhost:8123/api/static/${props.app.deployKey}/` : '',
+const coverLoadFailed = ref(false)
+
+const coverImageSrc = computed(() => {
+  if (props.app.cover && !coverLoadFailed.value) {
+    return props.app.cover
+  }
+  return defaultCover
+})
+
+watch(
+  () => props.app.cover,
+  () => {
+    coverLoadFailed.value = false
+  },
 )
 
 const emit = defineEmits<{
@@ -160,6 +150,10 @@ const handleCardClick = () => {
     return
   }
   emit('chat', props.app)
+}
+
+const handleCoverError = () => {
+  coverLoadFailed.value = true
 }
 
 const formatTime = (time?: string) => {
@@ -216,104 +210,8 @@ const formatDateTime = (time?: string) => {
   transition: transform 0.35s ease;
 }
 
-.live-cover {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #fff;
-}
-
-.live-cover iframe {
-  width: 400%;
-  height: 400%;
-  border: 0;
-  pointer-events: none;
-  transform: scale(0.25);
-  transform-origin: left top;
-}
-
 .app-card:hover .cover {
   transform: scale(1.025);
-}
-
-.cover-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 22px;
-  background:
-    radial-gradient(circle at 85% 15%, rgb(112 220 198 / 28%), transparent 34%),
-    linear-gradient(135deg, #edf0ff 0%, #f5f7ff 100%);
-}
-
-.mock-browser {
-  width: 88%;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 80%);
-  border-radius: 8px;
-  background: rgb(255 255 255 / 80%);
-  box-shadow: 0 12px 28px rgb(71 72 216 / 12%);
-  transform: rotate(-1.5deg);
-}
-
-.mock-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  height: 15px;
-  padding: 0 6px;
-  background: #fff;
-  border-bottom: 1px solid #edf0f5;
-}
-
-.mock-toolbar i {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #c6cad4;
-}
-
-.mock-content {
-  padding: 16px;
-}
-
-.mock-content > span,
-.mock-content > strong,
-.mock-content > p {
-  display: block;
-  border-radius: 20px;
-  background: #d8d9fb;
-}
-
-.mock-content > span {
-  width: 24%;
-  height: 4px;
-}
-
-.mock-content > strong {
-  width: 68%;
-  height: 9px;
-  margin-top: 8px;
-  background: #7c7def;
-}
-
-.mock-content > p {
-  width: 48%;
-  height: 5px;
-  margin: 6px 0 16px;
-}
-
-.mock-content > div {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 5px;
-}
-
-.mock-content > div i {
-  height: 34px;
-  border-radius: 4px;
-  background: #f0f1f8;
 }
 
 .cover-topbar {

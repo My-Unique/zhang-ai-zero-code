@@ -19,6 +19,7 @@ import com.unique.zhangaizerocode.core.handler.StreamHandlerExecutor;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.exception.ThrowUtils;
+import com.unique.zhangaizerocode.manager.CosManager;
 import com.unique.zhangaizerocode.mapper.AppMapper;
 import com.unique.zhangaizerocode.model.dto.app.AppQueryRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
@@ -37,13 +38,11 @@ import com.unique.zhangaizerocode.model.vo.AppVersionDiffVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionFileVO;
 import com.unique.zhangaizerocode.model.vo.AppVersionVO;
 import com.unique.zhangaizerocode.model.vo.UserVO;
-import com.unique.zhangaizerocode.service.AppService;
-import com.unique.zhangaizerocode.service.AppVersionService;
-import com.unique.zhangaizerocode.service.ChatHistoryService;
-import com.unique.zhangaizerocode.service.UserService;
+import com.unique.zhangaizerocode.service.*;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
@@ -77,6 +76,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private StreamHandlerExecutor streamHandlerExecutor;
     @Resource
     private VueProjectBuilder vueProjectBuilder;
+    @Resource
+    private ScreenshotService screenshotService;
+    @Resource
+    private CosManager cosManager;
 
 
     @Override
@@ -254,10 +257,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
          * 如果这一步失败，AppController 会把异常包装成 SSE error 事件返回，问题会直接暴露给前端。
          */
         return handledStream
+                .startWith("[系统] 正在分析需求并准备生成代码...\n\n")
                 .concatWith(Mono.fromCallable(() -> {
                     log.info("AI 代码生成流完成，开始校验并保存版本，appId: {}, versionNo: {}, codePath: {}",
                             appId, newVersionNo, codePath);
                     validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, toolExecutionCount.get());
+                    validateGeneratedCodeBuild(codeGenTypeEnum, codePath);
                     saveAppVersionAndUpdateCurrent(
                             appId,
                             newVersionNo,
@@ -366,19 +371,16 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
     private void appendVueProjectSourceSnapshot(File sourceDir, StringBuilder contextBuilder) {
-        List<String> relativeFilePaths = List.of(
-                "package.json",
-                "vite.config.js",
-                "index.html",
-                "src/main.js",
-                "src/App.vue",
-                "src/router/index.js",
-                "src/pages/Chat.vue"
-        );
+        List<String> relativeFilePaths = listVueProjectSnapshotFiles(sourceDir);
+        int maxTotalLength = 32000;
+        int maxSingleFileLength = 6000;
+        int appendedLength = 0;
 
-        int maxTotalLength = 24000;
-        int maxSingleFileLength = 8000;
-
+        contextBuilder.append("<project_files>\n");
+        for (String relativeFilePath : relativeFilePaths) {
+            contextBuilder.append("- ").append(relativeFilePath).append("\n");
+        }
+        contextBuilder.append("</project_files>\n\n");
         contextBuilder.append("<current_project>\n");
         for (String relativeFilePath : relativeFilePaths) {
             File file = new File(sourceDir, relativeFilePath);
@@ -394,13 +396,54 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             String fileBlock = "<file path=\"" + relativeFilePath + "\">\n"
                     + fileContent
                     + "\n</file>\n\n";
-            if (contextBuilder.length() + fileBlock.length() > maxTotalLength) {
+            if (appendedLength + fileBlock.length() > maxTotalLength) {
                 contextBuilder.append("<!-- 源码快照过长，后续文件已省略 -->\n");
                 break;
             }
             contextBuilder.append(fileBlock);
+            appendedLength += fileBlock.length();
         }
         contextBuilder.append("</current_project>\n");
+    }
+
+    private List<String> listVueProjectSnapshotFiles(File sourceDir) {
+        Path root = sourceDir.toPath().toAbsolutePath().normalize();
+        List<String> priorityFiles = List.of(
+                "package.json",
+                "vite.config.js",
+                "index.html",
+                "src/main.js",
+                "src/App.vue",
+                "src/router/index.js",
+                "src/styles/main.css"
+        );
+        Map<String, Integer> priorityOrder = new HashMap<>();
+        for (int index = 0; index < priorityFiles.size(); index++) {
+            priorityOrder.put(priorityFiles.get(index), index);
+        }
+
+        return FileUtil.loopFiles(sourceDir).stream()
+                .map(file -> root.relativize(file.toPath().toAbsolutePath().normalize()).toString().replace('\\', '/'))
+                .filter(this::isEditableSourceFile)
+                .filter(filePath -> !isVueSnapshotIgnoredFile(filePath))
+                .distinct()
+                .sorted(Comparator
+                        .comparingInt((String filePath) -> priorityOrder.getOrDefault(filePath, Integer.MAX_VALUE))
+                        .thenComparingInt(filePath -> filePath.startsWith("src/") ? 0 : 1)
+                        .thenComparing(filePath -> filePath))
+                .limit(80)
+                .toList();
+    }
+
+    private boolean isVueSnapshotIgnoredFile(String filePath) {
+        String normalized = filePath.replace('\\', '/');
+        String fileName = FileUtil.getName(normalized);
+        return normalized.startsWith(".idea/")
+                || normalized.startsWith(".vscode/")
+                || normalized.startsWith("coverage/")
+                || normalized.contains("/coverage/")
+                || Set.of("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb")
+                .contains(fileName);
     }
 
     private Flux<String> trackVueProjectToolExecution(Flux<String> codeStream,
@@ -475,6 +518,16 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     ErrorCode.SYSTEM_ERROR,
                     "Vue 项目生成不完整，缺少文件: " + String.join(", ", missingFiles));
         }
+    }
+
+    private void validateGeneratedCodeBuild(CodeGenTypeEnum codeGenTypeEnum, String codePath) {
+        if (codeGenTypeEnum != CodeGenTypeEnum.VUE_PROJECT) {
+            return;
+        }
+        boolean buildSuccess = vueProjectBuilder.buildProject(codePath);
+        ThrowUtils.throwIf(!buildSuccess,
+                ErrorCode.SYSTEM_ERROR,
+                "Vue 项目构建失败，生成代码存在语法错误或依赖问题，请重新生成");
     }
 
     private void prepareNewVersionDirectory(App app, Long appId, String newCodePath) {
@@ -580,7 +633,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         String previewKey = AppConstant.PREVIEW_KEY_PREFIX + appId;
         syncVersionToDeployDir(appVersion, previewKey, app.getCodeGenType());
-        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
+        String previewUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
+        generateCurrentPreviewScreenshotAsync(appId, previewUrl, versionNo);
+        return previewUrl;
     }
 
     @Override
@@ -625,7 +680,101 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         app.setDeployedTime(updateApp.getDeployedTime());
         app.setDeployedVersionNo(versionNo);
 
-        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        // 10. 构建应用访问 URL
+        String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        // 11. 异步生成截图并更新应用封面
+        generateAppScreenshotAsync(appId, appDeployUrl, deployKey, versionNo);
+        return appDeployUrl;
+
+    }
+
+    /**
+     * 异步生成应用截图并更新封面
+     *
+     * @param appId  应用ID
+     * @param appUrl 应用访问URL
+     */
+    @Override
+    public void generateAppScreenshotAsync(Long appId, String appUrl, String deployKey, Long deployedVersionNo) {
+        // 使用虚拟线程异步执行
+        Thread.startVirtualThread(() -> {
+            try {
+                // 调用截图服务生成截图并上传
+                String screenshotUrl = screenshotService.generateAndUploadScreenshot(appUrl);
+                if (StrUtil.isBlank(screenshotUrl)) {
+                    log.warn("应用截图生成结果为空，跳过更新封面，appId: {}, url: {}", appId, appUrl);
+                    return;
+                }
+                // 只更新仍指向本次部署的应用，避免旧截图任务覆盖新部署封面
+                App oldApp = this.getById(appId);
+                String oldCover = oldApp == null ? null : oldApp.getCover();
+                boolean updated = UpdateChain.of(getMapper())
+                        .set("cover", screenshotUrl, true)
+                        .eq("id", appId)
+                        .eq("deployKey", deployKey)
+                        .eq("deployedVersionNo", deployedVersionNo)
+                        .update();
+                if (!updated) {
+                    log.warn("应用部署状态已变化，跳过更新截图封面，appId: {}, deployKey: {}, versionNo: {}",
+                            appId, deployKey, deployedVersionNo);
+                } else {
+                    deleteAppCoverIfChanged(oldCover, screenshotUrl, appId);
+                }
+            } catch (Exception e) {
+                log.warn("异步生成应用截图失败，不影响部署结果，appId: {}, url: {}", appId, appUrl, e);
+            }
+        });
+    }
+
+
+    private void generateCurrentPreviewScreenshotAsync(Long appId, String previewUrl, Long versionNo) {
+        Thread.startVirtualThread(() -> {
+            try {
+                App app = this.getById(appId);
+                if (app == null || !Objects.equals(app.getVersionNo(), versionNo)) {
+                    return;
+                }
+                String screenshotUrl = screenshotService.generateAndUploadScreenshot(previewUrl);
+                if (StrUtil.isBlank(screenshotUrl)) {
+                    log.warn("预览封面生成结果为空，跳过更新封面，appId: {}, url: {}", appId, previewUrl);
+                    return;
+                }
+                App latestApp = this.getById(appId);
+                if (latestApp == null || !Objects.equals(latestApp.getVersionNo(), versionNo)) {
+                    deleteAppCover(screenshotUrl, appId);
+                    return;
+                }
+                String oldCover = latestApp.getCover();
+                boolean updated = UpdateChain.of(getMapper())
+                        .set("cover", screenshotUrl, true)
+                        .eq("id", appId)
+                        .eq("versionNo", versionNo)
+                        .update();
+                if (!updated) {
+                    deleteAppCover(screenshotUrl, appId);
+                    log.warn("预览封面更新失败，appId: {}", appId);
+                } else {
+                    deleteAppCoverIfChanged(oldCover, screenshotUrl, appId);
+                }
+            } catch (Exception e) {
+                log.warn("异步生成预览封面失败，不影响预览结果，appId: {}, url: {}", appId, previewUrl, e);
+            }
+        });
+    }
+
+    @Scheduled(cron = "0 0/30 * * * ?")
+    public void repairMissingCoverApps() {
+        List<App> deployedApps = this.list(QueryWrapper.create()
+                .isNotNull("deployKey")
+                .ne("deployKey", ""));
+        deployedApps.stream()
+                .filter(app -> StrUtil.isBlank(app.getCover()))
+                .filter(app -> app.getDeployedVersionNo() != null && app.getDeployedVersionNo() > 0)
+                .limit(20)
+                .forEach(app -> {
+                    String appUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, app.getDeployKey());
+                    generateAppScreenshotAsync(app.getId(), appUrl, app.getDeployKey(), app.getDeployedVersionNo());
+                });
     }
 
     @Override
@@ -977,6 +1126,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                         app.getCodeGenType() + "_" + appId));
             }
             if (app != null) {
+                deleteAppCover(app.getCover(), appId);
                 deleteDeployDir(app.getDeployKey());
             }
             deleteDeployDir(AppConstant.PREVIEW_KEY_PREFIX + appId);
@@ -990,6 +1140,24 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             }
         } catch (Exception e) {
             log.warn("清理应用文件失败，appId: {}", appId, e);
+        }
+    }
+
+    private void deleteAppCoverIfChanged(String oldCover, String newCover, Long appId) {
+        if (StrUtil.isBlank(oldCover) || Objects.equals(oldCover, newCover)) {
+            return;
+        }
+        deleteAppCover(oldCover, appId);
+    }
+
+    private void deleteAppCover(String coverUrl, Long appId) {
+        if (StrUtil.isBlank(coverUrl)) {
+            return;
+        }
+        try {
+            cosManager.deleteFileByUrl(coverUrl);
+        } catch (Exception e) {
+            log.warn("删除应用封面 COS 文件失败，appId: {}, cover: {}", appId, coverUrl, e);
         }
     }
 

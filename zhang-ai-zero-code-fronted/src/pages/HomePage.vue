@@ -253,7 +253,9 @@ const createApp = async () => {
   try {
     const res = await addApp({ initPrompt: value, codeGenType: selectedCodeGenType.value })
     if (res.data.code === 0 && res.data.data) {
-      await router.push(`/app/chat/${res.data.data}?autoSend=1`)
+      const createdAppId = res.data.data
+      prompt.value = ''
+      await router.push(`/app/chat/${createdAppId}?autoSend=1`)
       return
     }
     message.error(`创建失败：${res.data.message || '请稍后重试'}`)

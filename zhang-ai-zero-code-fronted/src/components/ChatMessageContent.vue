@@ -31,28 +31,144 @@ type MessageBlock = {
   language?: string
 }
 
-const blocks = computed<MessageBlock[]>(() => {
-  const result: MessageBlock[] = []
-  const pattern = /```([\w-]*)\n?([\s\S]*?)```/g
-  let cursor = 0
-  let match: RegExpExecArray | null
+const codeLanguages = new Set([
+  'vue',
+  'html',
+  'css',
+  'scss',
+  'less',
+  'js',
+  'javascript',
+  'ts',
+  'typescript',
+  'json',
+  'tsx',
+  'jsx',
+])
 
-  while ((match = pattern.exec(props.content))) {
-    const text = props.content.slice(cursor, match.index).trim()
-    if (text) {
-      result.push({ type: 'text', content: text })
+const looksLikeCodeLine = (line: string) => {
+  const text = line.trim()
+  return (
+    text.startsWith('<') ||
+    text.startsWith('{') ||
+    text.startsWith('[') ||
+    text.startsWith('.') ||
+    text.startsWith('#') ||
+    text.startsWith('@') ||
+    /^(import|export|const|let|var|function|class|interface|type|async|await|return)\b/.test(text)
+  )
+}
+
+const isGenerationStatusLine = (line: string) => {
+  return /^\[(正在编写|工具调用|选择工具)\]/.test(line.trim())
+}
+
+const isOnlyGenerationStatusContent = (content: string) => {
+  const lines = content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines.length > 0 && lines.every(isGenerationStatusLine)
+}
+
+const appendCodeBlock = (result: MessageBlock[], language: string, content: string) => {
+  const normalizedContent = content.trimEnd()
+  if (isOnlyGenerationStatusContent(normalizedContent)) {
+    result.push({ type: 'text', content: normalizedContent })
+    return
+  }
+  result.push({
+    type: 'code',
+    language,
+    content: normalizedContent,
+  })
+}
+
+const appendTextOrLooseCode = (result: MessageBlock[], segment: string) => {
+  const lines = segment.replace(/\r\n/g, '\n').split('\n')
+  let index = 0
+
+  while (index < lines.length) {
+    const language = lines[index].trim().toLowerCase()
+    const nextCodeLineIndex = lines.findIndex(
+      (line, lineIndex) => lineIndex > index && line.trim(),
+    )
+
+    if (
+      codeLanguages.has(language) &&
+      nextCodeLineIndex > index &&
+      looksLikeCodeLine(lines[nextCodeLineIndex])
+    ) {
+      const text = lines.slice(0, index).join('\n').trim()
+      if (text) {
+        result.push({ type: 'text', content: text })
+      }
+
+      let nextLanguageIndex = index + 1
+      while (nextLanguageIndex < lines.length) {
+        if (isGenerationStatusLine(lines[nextLanguageIndex])) {
+          break
+        }
+
+        const nextLanguage = lines[nextLanguageIndex].trim().toLowerCase()
+        const nextCodeIndex = lines.findIndex(
+          (line, lineIndex) => lineIndex > nextLanguageIndex && line.trim(),
+        )
+        if (
+          codeLanguages.has(nextLanguage) &&
+          nextCodeIndex > nextLanguageIndex &&
+          looksLikeCodeLine(lines[nextCodeIndex])
+        ) {
+          break
+        }
+        nextLanguageIndex += 1
+      }
+
+      appendCodeBlock(result, language, lines.slice(index + 1, nextLanguageIndex).join('\n'))
+      appendTextOrLooseCode(result, lines.slice(nextLanguageIndex).join('\n'))
+      return
     }
-    result.push({
-      type: 'code',
-      language: match[1],
-      content: match[2].trimEnd(),
-    })
-    cursor = pattern.lastIndex
+
+    index += 1
   }
 
-  const remaining = props.content.slice(cursor).trim()
-  if (remaining) {
-    result.push({ type: 'text', content: remaining })
+  const text = segment.trim()
+  if (text) {
+    result.push({ type: 'text', content: text })
+  }
+}
+
+const blocks = computed<MessageBlock[]>(() => {
+  const result: MessageBlock[] = []
+  let cursor = 0
+
+  while (cursor < props.content.length) {
+    const fenceStart = props.content.indexOf('```', cursor)
+    if (fenceStart < 0) {
+      appendTextOrLooseCode(result, props.content.slice(cursor))
+      break
+    }
+
+    appendTextOrLooseCode(result, props.content.slice(cursor, fenceStart))
+
+    const languageStart = fenceStart + 3
+    const firstLineBreak = props.content.indexOf('\n', languageStart)
+    if (firstLineBreak < 0) {
+      appendCodeBlock(result, props.content.slice(languageStart).trim(), '')
+      break
+    }
+
+    const language = props.content.slice(languageStart, firstLineBreak).trim()
+    const codeStart = firstLineBreak + 1
+    const fenceEnd = props.content.indexOf('```', codeStart)
+    if (fenceEnd < 0) {
+      appendCodeBlock(result, language, props.content.slice(codeStart))
+      break
+    }
+
+    appendCodeBlock(result, language, props.content.slice(codeStart, fenceEnd))
+    cursor = fenceEnd + 3
   }
   return result
 })

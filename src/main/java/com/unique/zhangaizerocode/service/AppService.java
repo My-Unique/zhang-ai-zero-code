@@ -55,4 +55,6 @@ public interface AppService extends IService<App> {
     AppVersionVO saveVersionFile(AppVersionFileRequest request, HttpServletRequest httpServletRequest);
 
     String previewVersion(Long appId, Long versionNo, HttpServletRequest httpServletRequest);
+
+    void generateAppScreenshotAsync(Long appId, String appUrl, String deployKey, Long deployedVersionNo);
 }

@@ -1,6 +1,7 @@
 package com.unique.zhangaizerocode.core;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.unique.zhangaizerocode.ai.AppNameGeneratorService;
 import com.unique.zhangaizerocode.ai.AiCodeGeneratorService;
 import com.unique.zhangaizerocode.ai.AiCodeGeneratorServiceFactory;
 import com.unique.zhangaizerocode.ai.model.HtmlCodeResult;
@@ -139,7 +140,7 @@ public class AiCodeGeneratorFacade {
                         sink.next(JSONUtil.toJsonStr(aiResponseMessage));
                     })
                     .onPartialToolExecutionRequest((index, toolExecutionRequest) -> {
-                        ToolRequestMessage toolRequestMessage = new ToolRequestMessage(toolExecutionRequest);
+                        ToolRequestMessage toolRequestMessage = new ToolRequestMessage(index, toolExecutionRequest);
                         sink.next(JSONUtil.toJsonStr(toolRequestMessage));
                     })
                     .onToolExecuted((ToolExecution toolExecution) -> {
@@ -159,7 +160,7 @@ public class AiCodeGeneratorFacade {
 
     //
     public String generateAppName(String initPrompt) {
-        AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.aiCodeGeneratorService();
+        AppNameGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.appNameGeneratorService();
         if (StrUtil.isBlank(initPrompt)) {
             return "我的应用";
         }

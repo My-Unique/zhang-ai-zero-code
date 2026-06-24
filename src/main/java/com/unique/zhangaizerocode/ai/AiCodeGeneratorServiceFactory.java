@@ -61,6 +61,12 @@ public class AiCodeGeneratorServiceFactory {
         return getAiCodeGeneratorService(0L);
     }
 
+    public AppNameGeneratorService appNameGeneratorService() {
+        return AiServices.builder(AppNameGeneratorService.class)
+                .chatModel(chatModel)
+                .build();
+    }
+
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId) {
         // 使用serviceCache获取服务实例，如果缓存中没有则创建新的实例
         // 使用lambda表达式作为缓存未命中时的回调函数

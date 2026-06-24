@@ -26,7 +26,14 @@ public class AppGenerationTaskManager {
 
         GenerationTask task = new GenerationTask(appId);
         taskMap.put(appId, task);
-        Disposable disposable = generationSupplier.get()
+        Flux<String> generationFlux;
+        try {
+            generationFlux = generationSupplier.get();
+        } catch (Throwable error) {
+            task.emitError(error);
+            return task.flux();
+        }
+        Disposable disposable = generationFlux
                 .subscribe(
                         task::emitMessage,
                         error -> {
