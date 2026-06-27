@@ -17,13 +17,6 @@
       />
 
       <div class="header-actions">
-        <a-button class="create-button" type="primary" @click="goToCreate">
-          <template #icon>
-            <PlusOutlined />
-          </template>
-          新建应用
-        </a-button>
-
         <a-dropdown v-if="loginUserStore.loginUser.id" placement="bottomRight">
           <button class="user-trigger" type="button">
             <a-avatar :size="34" :src="loginUserAvatar" />
@@ -60,7 +53,6 @@ import {
   HomeOutlined,
   LogoutOutlined,
   MessageOutlined,
-  PlusOutlined,
   TeamOutlined,
 } from '@ant-design/icons-vue'
 import { message, type MenuProps } from 'ant-design-vue'
@@ -126,13 +118,6 @@ const menuItems = computed<MenuProps['items']>(() =>
 
 const handleMenuClick: MenuProps['onClick'] = ({ key }) => {
   router.push(key as string)
-}
-
-const goToCreate = async () => {
-  await router.push({ path: '/', hash: '#create' })
-  requestAnimationFrame(() => {
-    document.querySelector('#create')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
 }
 
 const doLogout = async () => {
@@ -225,13 +210,6 @@ const doLogout = async () => {
   margin-left: 24px;
 }
 
-.create-button {
-  height: 38px;
-  padding-inline: 17px;
-  border-radius: 10px;
-  box-shadow: 0 8px 18px rgb(91 92 240 / 20%);
-}
-
 .user-trigger {
   display: flex;
   align-items: center;
@@ -282,7 +260,6 @@ const doLogout = async () => {
   }
 
   .brand-name,
-  .create-button,
   .user-copy {
     display: none;
   }

@@ -12,7 +12,6 @@ import com.unique.zhangaizerocode.common.DeleteRequest;
 import com.unique.zhangaizerocode.common.ResultUtils;
 import com.unique.zhangaizerocode.constant.AppConstant;
 import com.unique.zhangaizerocode.constant.UserConstant;
-import com.unique.zhangaizerocode.core.AiCodeGeneratorFacade;
 import com.unique.zhangaizerocode.core.generation.AppGenerationTaskManager;
 import com.unique.zhangaizerocode.core.generation.GenerationStreamEvent;
 import com.unique.zhangaizerocode.exception.BusinessException;
@@ -27,6 +26,7 @@ import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.model.vo.AppVO;
 import com.unique.zhangaizerocode.service.AppService;
 import com.unique.zhangaizerocode.service.AppVersionService;
+import com.unique.zhangaizerocode.service.ProjectDownloadService;
 import com.unique.zhangaizerocode.service.UserService;
 
 import jakarta.annotation.Resource;
@@ -66,45 +66,17 @@ public class AppController {
     @Resource
     private AppVersionService appVersionService;
     @Resource
-    private AiCodeGeneratorFacade aiCodeGeneratorFacade;
-    @Resource
     private AppGenerationTaskManager appGenerationTaskManager;
+    @Resource
+    private ProjectDownloadService projectDownloadService;
+
 
     @PostMapping("/add")
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
-
-        String initPrompt = appAddRequest.getInitPrompt();
-        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
-
         User loginUser = userService.getLoginUser(request);
-
-        App app = new App();
-        BeanUtil.copyProperties(appAddRequest, app);
-        app.setUserId(loginUser.getId());
-
-        // 根据初始化提示词生成简洁的应用名称；AI 调用失败时会自动回退为本地名称。
-        String appName = aiCodeGeneratorFacade.generateAppName(initPrompt);
-        app.setAppName(appName);
-        String codeGenType = appAddRequest.getCodeGenType();
-        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenType);
-        if (codeGenTypeEnum == null) {
-//            codeGenTypeEnum = CodeGenTypeEnum.MULTI_FILE;
-            codeGenTypeEnum = CodeGenTypeEnum.VUE_PROJECT;
-        }
-
-        app.setCodeGenType(codeGenTypeEnum.getValue());
-
-        // 重点：刚创建 app 时还没有任何代码版本，所以当前版本号是 0
-        app.setVersionNo(0L);
-        app.setDeployedVersionNo(0L);
-        app.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
-        app.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
-
-        boolean result = appService.save(app);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
-
-        return ResultUtils.success(app.getId());
+        Long addId = appService.createApp(appAddRequest, loginUser);
+        return ResultUtils.success(addId);
     }
 
 
@@ -468,6 +440,47 @@ public class AppController {
         // 调用服务部署应用
         String deployUrl = appService.deployApp(appId, loginUser);
         return ResultUtils.success(deployUrl);
+    }
+
+    /**
+     * 下载应用代码
+     *
+     * @param appId    应用ID
+     * @param request  请求
+     * @param response 响应
+     */
+    @GetMapping("/download/{appId}")
+    public void downloadAppCode(@PathVariable Long appId,
+                                HttpServletRequest request,
+                                HttpServletResponse response) {
+        // 1. 基础校验
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
+        // 2. 查询应用信息
+        App app = appService.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        // 3. 权限校验：只有应用创建者可以下载代码
+        User loginUser = userService.getLoginUser(request);
+        if (!app.getUserId().equals(loginUser.getId())) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限下载该应用代码");
+        }
+        // 4. 只有已经部署并生成稳定浏览地址的应用才允许下载
+        ThrowUtils.throwIf(StrUtil.isBlank(app.getDeployKey()),
+                ErrorCode.OPERATION_ERROR, "应用尚未部署，暂不支持下载代码");
+        // 5. 构建应用代码目录路径（生成目录，非部署目录）
+        String codeGenType = app.getCodeGenType();
+        String sourceDirName = codeGenType + "_" + appId;
+        String sourceDirPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + sourceDirName;
+        // 6. 检查代码目录是否存在
+        File sourceDir = new File(sourceDirPath);
+        ThrowUtils.throwIf(!sourceDir.exists() || !sourceDir.isDirectory(),
+                ErrorCode.NOT_FOUND_ERROR, "应用代码不存在，请先生成代码");
+        // 7. 记录下载次数
+        ThrowUtils.throwIf(!appService.incrementDownloadCount(appId),
+                ErrorCode.OPERATION_ERROR, "记录下载次数失败");
+        // 8. 生成下载文件名（不建议添加中文内容）
+        String downloadFileName = String.valueOf(appId);
+        // 9. 调用通用下载服务
+        projectDownloadService.downloadProjectAsZip(sourceDirPath, downloadFileName, response);
     }
 
     /**

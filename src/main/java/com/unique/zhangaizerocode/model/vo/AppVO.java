@@ -49,6 +49,11 @@ public class AppVO implements Serializable {
     private Long deployedVersionNo;
 
     /**
+     * 下载次数
+     */
+    private Long downloadCount;
+
+    /**
      * 生成状态：not_generated/generating/succeeded/failed
      */
     private String generationStatus;

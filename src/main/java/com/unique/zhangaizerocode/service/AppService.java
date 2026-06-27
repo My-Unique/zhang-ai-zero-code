@@ -2,6 +2,7 @@ package com.unique.zhangaizerocode.service;
 
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.core.service.IService;
+import com.unique.zhangaizerocode.model.dto.app.AppAddRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppQueryRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
 import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
@@ -28,6 +29,8 @@ public interface AppService extends IService<App> {
 
     AppVO getAppVO(App app);
 
+    Long createApp(AppAddRequest appAddRequest, User loginUser);
+
     QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest);
 
     List<AppVO> getAppVOList(List<App> appList);
@@ -41,6 +44,8 @@ public interface AppService extends IService<App> {
     Boolean undeployApp(Long appId, User loginUser);
 
     Boolean stopGeneration(Long appId, User loginUser);
+
+    boolean incrementDownloadCount(Long appId);
 
     List<AppVersionVO> listAppVersions(Long appId, HttpServletRequest httpServletRequest);
 

@@ -10,6 +10,7 @@ import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.core.update.UpdateChain;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import com.unique.zhangaizerocode.ai.AiCodeGenTypeRoutingService;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessage;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessageTypeEnum;
 import com.unique.zhangaizerocode.constant.AppConstant;
@@ -21,10 +22,7 @@ import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.exception.ThrowUtils;
 import com.unique.zhangaizerocode.manager.CosManager;
 import com.unique.zhangaizerocode.mapper.AppMapper;
-import com.unique.zhangaizerocode.model.dto.app.AppQueryRequest;
-import com.unique.zhangaizerocode.model.dto.app.AppRollbackVersionRequest;
-import com.unique.zhangaizerocode.model.dto.app.AppVersionDiffRequest;
-import com.unique.zhangaizerocode.model.dto.app.AppVersionFileRequest;
+import com.unique.zhangaizerocode.model.dto.app.*;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.model.entity.ChatHistory;
@@ -33,11 +31,7 @@ import com.unique.zhangaizerocode.model.enums.AppGenerationStatusEnum;
 import com.unique.zhangaizerocode.model.enums.AppVisibilityEnum;
 import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
-import com.unique.zhangaizerocode.model.vo.AppVO;
-import com.unique.zhangaizerocode.model.vo.AppVersionDiffVO;
-import com.unique.zhangaizerocode.model.vo.AppVersionFileVO;
-import com.unique.zhangaizerocode.model.vo.AppVersionVO;
-import com.unique.zhangaizerocode.model.vo.UserVO;
+import com.unique.zhangaizerocode.model.vo.*;
 import com.unique.zhangaizerocode.service.*;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
@@ -65,7 +59,11 @@ import java.util.stream.Collectors;
 @Slf4j
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
     @Resource
+    private AppMapper appMapper;
+    @Resource
     private UserService userService;
+    @Resource
+    private AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService;
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
     @Resource
@@ -130,6 +128,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return chatHistoryService.count(QueryWrapper.create()
                 .eq(ChatHistory::getAppId, appId)
                 .eq(ChatHistory::getMessageType, ChatHistoryMessageTypeEnum.USER.getValue()));
+    }
+
+    @Override
+    public boolean incrementDownloadCount(Long appId) {
+        if (appId == null || appId <= 0) {
+            return false;
+        }
+        return appMapper.incrementDownloadCount(appId) > 0;
     }
 
     @Override
@@ -338,6 +344,39 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return contextBuilder.toString();
     }
 
+    @Override
+    public Long createApp(AppAddRequest appAddRequest, User loginUser) {
+        // 参数校验
+        String initPrompt = appAddRequest.getInitPrompt();
+        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
+
+        // 构造入库对象
+        App app = new App();
+        BeanUtil.copyProperties(appAddRequest, app);
+        app.setUserId(loginUser.getId());
+
+        // 应用名称由 AI 生成，失败时会自动回退为 prompt 前 12 位
+        String appName = aiCodeGeneratorFacade.generateAppName(initPrompt);
+        app.setAppName(appName);
+
+        // 使用 AI 智能选择代码生成类型，直接返回枚举类型
+        CodeGenTypeEnum selectedCodeGenType = aiCodeGenTypeRoutingService.routeCodeGenType(initPrompt);
+        ThrowUtils.throwIf(selectedCodeGenType == null, ErrorCode.OPERATION_ERROR, "代码生成类型选择失败");
+        app.setCodeGenType(selectedCodeGenType.getValue());
+
+        // 刚创建 app 时还没有任何代码版本，所以当前版本号和部署版本号都是 0
+        app.setVersionNo(0L);
+        app.setDeployedVersionNo(0L);
+        app.setDownloadCount(0L);
+        app.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
+        app.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
+
+        // 插入数据库
+        boolean result = this.save(app);
+        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
+        log.info("应用创建成功，ID: {}, 类型: {}", app.getId(), selectedCodeGenType.getValue());
+        return app.getId();
+    }
     private void appendRecentUserMessages(Long appId, String currentMessage, StringBuilder contextBuilder) {
         List<ChatHistory> recentUserMessages = chatHistoryService.list(
                 QueryWrapper.create()

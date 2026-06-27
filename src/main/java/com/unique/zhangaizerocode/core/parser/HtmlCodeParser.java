@@ -11,6 +11,9 @@ public class HtmlCodeParser implements CodeParser<HtmlCodeResult> {
 
     private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\s*\\n([\\s\\S]*?)```",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOOL_MARKER_LINE_PATTERN = Pattern.compile(
+            "(?m)^\\s*\\[(?:工具调用|正在编写)](?:\\s*写入文件)?\\s+[^\\r\\n]+\\s*\\R?"
+    );
 
     @Override
     public HtmlCodeResult parseCode(String codeContent) {
@@ -18,10 +21,10 @@ public class HtmlCodeParser implements CodeParser<HtmlCodeResult> {
         // 提取 HTML 代码
         String htmlCode = extractHtmlCode(codeContent);
         if (htmlCode != null && !htmlCode.trim().isEmpty()) {
-            result.setHtmlCode(htmlCode.trim());
+            result.setHtmlCode(cleanGeneratedCode(htmlCode));
         } else {
             // 如果没有找到代码块，将整个内容作为HTML
-            result.setHtmlCode(codeContent.trim());
+            result.setHtmlCode(cleanGeneratedCode(codeContent));
         }
         return result;
     }
@@ -38,6 +41,10 @@ public class HtmlCodeParser implements CodeParser<HtmlCodeResult> {
             return matcher.group(1);
         }
         return null;
+    }
+
+    private static String cleanGeneratedCode(String codeContent) {
+        return TOOL_MARKER_LINE_PATTERN.matcher(codeContent).replaceAll("").trim();
     }
 }
 

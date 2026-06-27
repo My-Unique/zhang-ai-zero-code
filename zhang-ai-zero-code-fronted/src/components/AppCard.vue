@@ -87,6 +87,10 @@
           <MessageOutlined />
           {{ app.chatCount || 0 }} 轮
         </span>
+        <span class="download-count">
+          <DownloadOutlined />
+          {{ app.downloadCount || 0 }} 次
+        </span>
         <span>{{ formatTime(app.createTime) }}</span>
       </div>
     </div>
@@ -97,6 +101,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   ExportOutlined,
   MessageOutlined,
@@ -338,6 +343,7 @@ p {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 12px;
   color: #98a2b3;
@@ -345,7 +351,8 @@ p {
   border-top: 1px solid #f0f1f4;
 }
 
-.chat-count {
+.chat-count,
+.download-count {
   display: inline-flex;
   align-items: center;
   gap: 4px;

@@ -158,7 +158,6 @@ public class AiCodeGeneratorFacade {
         });
     }
 
-    //
     public String generateAppName(String initPrompt) {
         AppNameGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.appNameGeneratorService();
         if (StrUtil.isBlank(initPrompt)) {

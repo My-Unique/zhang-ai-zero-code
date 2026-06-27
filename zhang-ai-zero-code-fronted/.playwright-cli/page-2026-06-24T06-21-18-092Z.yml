@@ -1,0 +1,63 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - link "小张 AI 零代码 小张 AI 零代码" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "小张 AI 零代码" [ref=e8]
+        - strong [ref=e9]: 小张 AI 零代码
+      - menu [ref=e10]:
+        - menuitem "home 首页" [ref=e11] [cursor=pointer]:
+          - img "home" [ref=e12]:
+            - img [ref=e13]
+          - generic [ref=e15]: 首页
+        - generic:
+          - generic:
+            - img:
+              - img
+      - generic [ref=e16]:
+        - button "plus 新建应用" [ref=e17] [cursor=pointer]:
+          - img "plus" [ref=e18]:
+            - img [ref=e19]
+          - generic [ref=e22]: 新建应用
+        - button "登录" [ref=e23] [cursor=pointer]:
+          - generic [ref=e24]: 登录
+    - main [ref=e25]:
+      - generic [ref=e258]:
+        - img "登录页动漫氛围图" [ref=e260]
+        - generic [ref=e261]:
+          - generic [ref=e262]:
+            - heading "用户登录" [level=2] [ref=e263]
+            - generic [ref=e264]: 登录后开始生成你的 AI 应用
+          - generic [ref=e265]:
+            - generic [ref=e267]:
+              - generic "账号" [ref=e269]: "* 账号"
+              - textbox "* 账号" [ref=e273]:
+                - /placeholder: 请输入账号
+            - generic [ref=e275]:
+              - generic "密码" [ref=e277]: "* 密码"
+              - generic [ref=e281]:
+                - textbox "* 密码" [ref=e282]:
+                  - /placeholder: 请输入密码
+                - img "eye-invisible" [ref=e284] [cursor=pointer]:
+                  - img [ref=e285]
+            - generic [ref=e288]:
+              - generic [ref=e289]: 没有账号？
+              - link "立即注册" [ref=e290] [cursor=pointer]:
+                - /url: /user/register
+            - button "登 录" [ref=e296] [cursor=pointer]:
+              - generic [ref=e297]: 登 录
+    - generic [ref=e239]:
+      - generic [ref=e241]:
+        - strong [ref=e242]: 小张 AI 零代码
+        - paragraph [ref=e243]: 让每一个想法，都能快速成为可访问的产品。
+      - link "GitHub 项目" [ref=e244] [cursor=pointer]:
+        - /url: https://github.com/My-Unique/zhang-ai-zero-code
+  - generic [ref=e245]:
+    - generic "Toggle devtools panel" [ref=e246] [cursor=pointer]:
+      - img [ref=e247]
+    - generic "Toggle Component Inspector" [ref=e252] [cursor=pointer]:
+      - img [ref=e253]
+  - generic [ref=e299]:
+    - img "close-circle" [ref=e300]:
+      - img [ref=e301]
+    - text: 没有权限

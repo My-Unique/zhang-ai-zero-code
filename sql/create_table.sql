@@ -38,6 +38,7 @@ create table app
     deployKey    varchar(64)                        null comment '部署标识',
     deployedTime datetime                           null comment '部署时间',
     deployedVersionNo bigint default 0              not null comment '已部署版本号',
+    downloadCount bigint default 0                  not null comment '下载次数',
     generationStatus varchar(32) default 'not_generated' not null comment '生成状态：not_generated/generating/succeeded/failed',
     visibility   varchar(32) default 'private'      not null comment '可见范围：private/public',
     currentVersionId bigint                         null comment '当前版本 id',

@@ -1,0 +1,200 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e5]:
+      - link "小张 AI 零代码 小张 AI 零代码" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img "小张 AI 零代码" [ref=e8]
+        - strong [ref=e9]: 小张 AI 零代码
+      - menu [ref=e10]:
+        - menuitem "home 首页" [ref=e11] [cursor=pointer]:
+          - img "home" [ref=e12]:
+            - img [ref=e13]
+          - generic [ref=e15]: 首页
+        - generic:
+          - generic:
+            - img:
+              - img
+      - generic [ref=e16]:
+        - button "plus 新建应用" [ref=e17] [cursor=pointer]:
+          - img "plus" [ref=e18]:
+            - img [ref=e19]
+          - generic [ref=e22]: 新建应用
+        - button "登录" [ref=e23] [cursor=pointer]:
+          - generic [ref=e24]: 登录
+    - main [ref=e25]:
+      - main [ref=e26]:
+        - generic [ref=e31]:
+          - heading "一句话，生成你的应用" [level=1] [ref=e32]
+          - paragraph [ref=e33]: 描述你的想法，AI 自动完成设计、编码与部署。
+          - generic [ref=e34]:
+            - generic [ref=e35]:
+              - generic [ref=e36]:
+                - img [ref=e37]
+                - text: AI 创作助手
+              - generic [ref=e40]: Ctrl + Enter 发送
+            - textbox "描述你想创建的应用，例如：帮我创建一个极简风格的个人作品集网站，包含项目展示、个人介绍和联系方式..." [ref=e41]
+            - generic [ref=e42]:
+              - generic [ref=e43]: 生成方式
+              - generic [ref=e44]:
+                - generic [ref=e45] [cursor=pointer]:
+                  - generic [ref=e46]:
+                    - radio "Vue 多文件" [checked]
+                  - generic [ref=e47]: Vue 多文件
+                - generic [ref=e48] [cursor=pointer]:
+                  - generic [ref=e49]:
+                    - radio "HTML 单文件"
+                  - generic [ref=e50]: HTML 单文件
+                - generic [ref=e51] [cursor=pointer]:
+                  - generic [ref=e52]:
+                    - radio "原生多文件"
+                  - generic [ref=e53]: 原生多文件
+            - generic [ref=e54]:
+              - generic [ref=e55]:
+                - generic [ref=e56]: 试试这些：
+                - button "个人作品集" [ref=e57] [cursor=pointer]
+                - button "数据分析看板" [ref=e58] [cursor=pointer]
+                - button "企业官网" [ref=e59] [cursor=pointer]
+                - button "活动落地页" [ref=e60] [cursor=pointer]
+              - button "开始生成 arrow-right" [ref=e61] [cursor=pointer]:
+                - generic [ref=e62]: 开始生成
+                - img "arrow-right" [ref=e63]:
+                  - img [ref=e64]
+          - generic [ref=e66]:
+            - generic [ref=e67]:
+              - img "layout" [ref=e69]:
+                - img [ref=e70]
+              - generic [ref=e72]:
+                - strong [ref=e73]: 智能页面设计
+                - generic [ref=e74]: 自动生成专业视觉
+            - generic [ref=e75]:
+              - img "code" [ref=e77]:
+                - img [ref=e78]
+              - generic [ref=e80]:
+                - strong [ref=e81]: 完整代码生成
+                - generic [ref=e82]: 直接产出可运行项目
+            - generic [ref=e83]:
+              - img "cloud-upload" [ref=e85]:
+                - img [ref=e86]
+              - generic [ref=e89]:
+                - strong [ref=e90]: 一键在线部署
+                - generic [ref=e91]: 快速发布与分享
+        - generic [ref=e93]:
+          - generic [ref=e94]:
+            - generic [ref=e95]:
+              - text: CREATION WORKSPACE
+              - heading "你的应用工作台" [level=2] [ref=e96]
+              - paragraph [ref=e97]: 管理创作进度，随时继续完善已有应用。
+            - generic [ref=e98]:
+              - generic [ref=e99]:
+                - strong [ref=e100]: "0"
+                - generic [ref=e101]: 我的应用
+              - generic [ref=e103]:
+                - strong [ref=e104]: "2"
+                - generic [ref=e105]: 精选案例
+          - generic [ref=e106]:
+            - generic [ref=e107]:
+              - generic [ref=e108]:
+                - img "appstore" [ref=e110]:
+                  - img [ref=e111]
+                - generic [ref=e113]:
+                  - heading "我的应用" [level=3] [ref=e114]
+                  - paragraph [ref=e115]: 最近创建和编辑的应用
+              - generic [ref=e116]:
+                - img "search" [ref=e118]:
+                  - img [ref=e119]
+                - textbox "搜索应用" [ref=e121]
+            - generic [ref=e125]:
+              - img [ref=e127]
+              - paragraph [ref=e139]: 暂无应用，开始创建你的第一个作品吧
+          - generic [ref=e140]:
+            - generic [ref=e141]:
+              - generic [ref=e142]:
+                - img "star" [ref=e144]:
+                  - img [ref=e145]
+                - generic [ref=e147]:
+                  - heading "精选应用" [level=3] [ref=e148]
+                  - paragraph [ref=e149]: 发现社区中值得参考的优秀作品
+              - generic [ref=e150]:
+                - img "search" [ref=e152]:
+                  - img [ref=e153]
+                - textbox "搜索应用" [ref=e155]
+            - generic [ref=e159]:
+              - article [ref=e160] [cursor=pointer]:
+                - generic [ref=e161]:
+                  - img "美食菜谱" [ref=e162]
+                  - generic [ref=e163]:
+                    - generic [ref=e164]: Vue 多文件
+                    - generic [ref=e165]:
+                      - img "star" [ref=e166]:
+                        - img [ref=e167]
+                      - text: 精选
+                  - generic [ref=e169]:
+                    - button "export 查看作品" [ref=e170]:
+                      - img "export" [ref=e171]:
+                        - img [ref=e172]
+                      - generic [ref=e174]: 查看作品
+                    - button "message 查看对话" [ref=e175]:
+                      - img "message" [ref=e176]:
+                        - img [ref=e177]
+                      - generic [ref=e179]: 查看对话
+                - generic [ref=e180]:
+                  - generic [ref=e181]:
+                    - heading "美食菜谱" [level=3] [ref=e182]
+                    - button "more" [ref=e183]:
+                      - img "more" [ref=e184]:
+                        - img [ref=e185]
+                  - paragraph [ref=e187]: 创造一个美食菜谱小app
+                  - generic [ref=e188]:
+                    - generic [ref=e189]:
+                      - img [ref=e192]
+                      - generic [ref=e193]: 张三
+                    - generic [ref=e194]:
+                      - img "message" [ref=e195]:
+                        - img [ref=e196]
+                      - text: 1 轮
+                    - generic [ref=e198]: 2026/6/4
+              - article [ref=e199] [cursor=pointer]:
+                - generic [ref=e200]:
+                  - img "百行小游戏" [ref=e201]
+                  - generic [ref=e202]:
+                    - generic [ref=e203]: Vue 多文件
+                    - generic [ref=e204]:
+                      - img "star" [ref=e205]:
+                        - img [ref=e206]
+                      - text: 精选
+                  - generic [ref=e208]:
+                    - button "export 查看作品" [ref=e209]:
+                      - img "export" [ref=e210]:
+                        - img [ref=e211]
+                      - generic [ref=e213]: 查看作品
+                    - button "message 查看对话" [ref=e214]:
+                      - img "message" [ref=e215]:
+                        - img [ref=e216]
+                      - generic [ref=e218]: 查看对话
+                - generic [ref=e219]:
+                  - generic [ref=e220]:
+                    - heading "百行小游戏" [level=3] [ref=e221]
+                    - button "more" [ref=e222]:
+                      - img "more" [ref=e223]:
+                        - img [ref=e224]
+                  - paragraph [ref=e226]: 做一个小游戏页面，不超过100行
+                  - generic [ref=e227]:
+                    - generic [ref=e228]:
+                      - img [ref=e231]
+                      - generic [ref=e232]: 张三
+                    - generic [ref=e233]:
+                      - img "message" [ref=e234]:
+                        - img [ref=e235]
+                      - text: 1 轮
+                    - generic [ref=e237]: 2026/6/4
+    - generic [ref=e239]:
+      - generic [ref=e241]:
+        - strong [ref=e242]: 小张 AI 零代码
+        - paragraph [ref=e243]: 让每一个想法，都能快速成为可访问的产品。
+      - link "GitHub 项目" [ref=e244] [cursor=pointer]:
+        - /url: https://github.com/My-Unique/zhang-ai-zero-code
+  - generic [ref=e245]:
+    - generic "Toggle devtools panel" [ref=e246] [cursor=pointer]:
+      - img [ref=e247]
+    - generic "Toggle Component Inspector" [ref=e252] [cursor=pointer]:
+      - img [ref=e253]

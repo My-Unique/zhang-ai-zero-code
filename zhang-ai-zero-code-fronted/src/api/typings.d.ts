@@ -105,6 +105,7 @@ declare namespace API {
     deployKey?: string
     deployedTime?: string
     deployedVersionNo?: number
+    downloadCount?: number
     generationStatus?: string
     visibility?: string
     priority?: number

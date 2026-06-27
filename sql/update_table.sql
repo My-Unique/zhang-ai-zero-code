@@ -1,6 +1,7 @@
 ALTER TABLE app ADD COLUMN currentVersionId BIGINT COMMENT '当前版本 id';
 ALTER TABLE app ADD COLUMN versionNo INT DEFAULT 0 COMMENT '当前版本号';
 ALTER TABLE app ADD COLUMN deployedVersionNo BIGINT DEFAULT 0 COMMENT '已部署版本号';
+ALTER TABLE app ADD COLUMN downloadCount BIGINT DEFAULT 0 NOT NULL COMMENT '下载次数';
 ALTER TABLE app ADD COLUMN generationStatus VARCHAR(32) DEFAULT 'not_generated' NOT NULL COMMENT '生成状态：not_generated/generating/succeeded/failed';
 ALTER TABLE app ADD COLUMN visibility VARCHAR(32) DEFAULT 'private' NOT NULL COMMENT '可见范围：private/public';
 
@@ -54,3 +55,4 @@ WHERE isDelete = 0
   AND (versionNo IS NULL OR versionNo <= 0)
   AND deployKey IS NOT NULL
   AND deployKey <> '';
+ALTER TABLE app ADD COLUMN downloadCount BIGINT DEFAULT 0 NOT NULL COMMENT '下载次数';

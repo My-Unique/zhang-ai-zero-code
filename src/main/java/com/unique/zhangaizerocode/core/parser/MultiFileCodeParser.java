@@ -9,6 +9,9 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
     private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
     private static final Pattern CSS_CODE_PATTERN = Pattern.compile("```css\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
     private static final Pattern JS_CODE_PATTERN = Pattern.compile("```(?:js|javascript)\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOOL_MARKER_LINE_PATTERN = Pattern.compile(
+            "(?m)^\\s*\\[(?:工具调用|正在编写)](?:\\s*写入文件)?\\s+[^\\r\\n]+\\s*\\R?"
+    );
 
     @Override
     public MultiFileCodeResult parseCode(String codeContent) {
@@ -19,15 +22,15 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
         String jsCode = extractCodeByPattern(codeContent, JS_CODE_PATTERN);
         // 设置HTML代码
         if (htmlCode != null && !htmlCode.trim().isEmpty()) {
-            result.setHtmlCode(htmlCode.trim());
+            result.setHtmlCode(cleanGeneratedCode(htmlCode));
         }
         // 设置CSS代码
         if (cssCode != null && !cssCode.trim().isEmpty()) {
-            result.setCssCode(cssCode.trim());
+            result.setCssCode(cleanGeneratedCode(cssCode));
         }
         // 设置JS代码
         if (jsCode != null && !jsCode.trim().isEmpty()) {
-            result.setJsCode(jsCode.trim());
+            result.setJsCode(cleanGeneratedCode(jsCode));
         }
         return result;
     }
@@ -47,5 +50,9 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
             return matcher.group(1);
         }
         return null;
+    }
+
+    private static String cleanGeneratedCode(String codeContent) {
+        return TOOL_MARKER_LINE_PATTERN.matcher(codeContent).replaceAll("").trim();
     }
 }

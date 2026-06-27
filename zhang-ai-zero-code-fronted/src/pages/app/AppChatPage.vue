@@ -18,17 +18,24 @@
 
       <div class="header-actions">
         <a-button
-          :disabled="!previewUrl || generating || previewBuilding || deploying || undeploying"
-          @click="refreshPreview"
+          :loading="downloadingCode"
+          :disabled="
+            generating ||
+            previewBuilding ||
+            deploying ||
+            undeploying ||
+            !canDownloadCode
+          "
+          @click="downloadAppCode"
         >
-          <ReloadOutlined />
-          刷新预览
+          <DownloadOutlined />
+          {{ downloadButtonText }}
         </a-button>
         <a-button
           v-if="appInfo.deployKey"
           danger
           :loading="undeploying"
-          :disabled="generating || previewBuilding || deploying"
+          :disabled="generating || previewBuilding || deploying || downloadingCode"
           @click="undeploy"
         >
           下线应用
@@ -36,7 +43,13 @@
         <a-button
           type="primary"
           :loading="deploying"
-          :disabled="generating || previewBuilding || undeploying || (appInfo.versionNo || 0) <= 0"
+          :disabled="
+            generating ||
+            previewBuilding ||
+            undeploying ||
+            downloadingCode ||
+            (appInfo.versionNo || 0) <= 0
+          "
           @click="deploy()"
         >
           <CloudUploadOutlined />
@@ -147,7 +160,6 @@
           <div class="composer">
             <a-textarea
               v-model:value="inputMessage"
-              :disabled="generating"
               :auto-size="{ minRows: 3, maxRows: 7 }"
               placeholder="继续描述要新增或修改的内容..."
               @keydown.meta.enter.prevent="sendMessage"
@@ -365,6 +377,7 @@ import { deleteAppChatHistory, listAppChatHistory } from '@/api/chatHistoryContr
 import ChatMessageContent from '@/components/ChatMessageContent.vue'
 import VersionCodeWorkspace from '@/components/VersionCodeWorkspace.vue'
 import { useLoginUserStore } from '@/stores/loginUser'
+import request from '@/request'
 import logo from '@/assets/logo.jpg'
 import defaultAvatar from '@/assets/default-avatar.png'
 
@@ -392,6 +405,7 @@ const generating = ref(false)
 const previewBuilding = ref(false)
 const deploying = ref(false)
 const undeploying = ref(false)
+const downloadingCode = ref(false)
 const deployModalOpen = ref(false)
 const deployUrl = ref('')
 const generatedPreviewUrl = ref('')
@@ -441,6 +455,16 @@ const userAvatar = computed(() => loginUserStore.loginUser.userAvatar || default
 const chatRoundCount = computed(() => {
   const loadedCount = messages.value.filter((item) => item.type === 'user').length
   return Math.max(appInfo.value.chatCount ?? 0, loadedCount)
+})
+const canDownloadCode = computed(
+  () => Boolean(appInfo.value.deployKey) && (appInfo.value.versionNo || 0) > 0,
+)
+const downloadButtonText = computed(() => {
+  if (!appInfo.value.deployKey) {
+    return '部署后下载'
+  }
+  const downloadCount = appInfo.value.downloadCount || 0
+  return downloadCount > 0 ? `下载代码 ${downloadCount} 次` : '下载代码'
 })
 const previewUrl = computed(() => {
   if (historicalPreviewUrl.value) {
@@ -631,6 +655,35 @@ const downloadTextFile = (content: string, filename: string) => {
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
+}
+
+const downloadBlobFile = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+const parseDownloadFilename = (contentDisposition?: string) => {
+  if (!contentDisposition) {
+    return ''
+  }
+
+  const utf8FilenameMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8FilenameMatch?.[1]) {
+    return decodeURIComponent(utf8FilenameMatch[1].replace(/^"|"$/g, ''))
+  }
+
+  const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i)
+  if (filenameMatch?.[1]) {
+    return decodeURIComponent(filenameMatch[1].trim())
+  }
+
+  return ''
 }
 
 const sanitizeFilename = (name: string) => {
@@ -904,6 +957,9 @@ const restoreFailedMessage = () => {
 }
 
 const buildGenerationRequestMessage = (content: string) => {
+  if (appInfo.value.codeGenType !== 'vue_project') {
+    return content.trim()
+  }
   return `${content.trim()}${codeGenerationFormatInstruction}`
 }
 
@@ -1157,8 +1213,55 @@ const showCurrentPreview = async () => {
   await observePreviewViewport()
 }
 
+const downloadAppCode = async () => {
+  if (!appInfo.value.deployKey) {
+    message.warning('请先部署应用，再下载代码')
+    return
+  }
+  if ((appInfo.value.versionNo || 0) <= 0) {
+    message.warning('应用生成完成后才能下载代码')
+    return
+  }
+  if (
+    downloadingCode.value ||
+    generating.value ||
+    previewBuilding.value ||
+    deploying.value ||
+    undeploying.value ||
+    !canDownloadCode.value
+  ) {
+    return
+  }
+
+  downloadingCode.value = true
+  try {
+    const res = await request<Blob>(`/app/download/${encodeURIComponent(appId)}`, {
+      method: 'GET',
+      responseType: 'blob',
+    })
+    const contentDisposition = res.headers['content-disposition']
+    const fallbackFilename = `${sanitizeFilename(appInfo.value.appName || `app-${appId}`)}.zip`
+    const filename = parseDownloadFilename(contentDisposition) || fallbackFilename
+    downloadBlobFile(res.data, filename.endsWith('.zip') ? filename : `${filename}.zip`)
+    appInfo.value.downloadCount = (appInfo.value.downloadCount || 0) + 1
+    await loadApp()
+    message.success('代码已开始下载')
+  } catch (error) {
+    console.error('下载代码失败：', error)
+    message.error('下载代码失败，请稍后重试')
+  } finally {
+    downloadingCode.value = false
+  }
+}
+
 const deploy = async () => {
-  if (generating.value || previewBuilding.value || deploying.value || undeploying.value) {
+  if (
+    generating.value ||
+    previewBuilding.value ||
+    deploying.value ||
+    undeploying.value ||
+    downloadingCode.value
+  ) {
     return
   }
   deploying.value = true
@@ -1184,7 +1287,13 @@ const deploy = async () => {
 }
 
 const undeploy = () => {
-  if (generating.value || previewBuilding.value || deploying.value || undeploying.value) {
+  if (
+    generating.value ||
+    previewBuilding.value ||
+    deploying.value ||
+    undeploying.value ||
+    downloadingCode.value
+  ) {
     return
   }
 
@@ -1560,7 +1669,7 @@ onBeforeUnmount(() => {
 }
 
 .message-bubble {
-  max-width: 84%;
+  max-width: 92%;
 }
 
 .message-owner {
@@ -1575,15 +1684,19 @@ onBeforeUnmount(() => {
 }
 
 .message-content {
-  padding: 10px 12px;
+  padding: 12px 14px;
   color: #475467;
-  font-size: 11px;
-  line-height: 1.7;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', Arial,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
-  border: 1px solid #eaecf0;
-  border-radius: 4px 12px 12px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px 14px 14px;
   background: #fff;
+  box-shadow: 0 8px 22px rgb(16 24 40 / 6%);
 }
 
 .message-content.typing {
@@ -1656,6 +1769,14 @@ onBeforeUnmount(() => {
   border-radius: 12px 4px 12px 12px;
   background: #5b5cf0;
   box-shadow: 0 6px 14px rgb(91 92 240 / 15%);
+}
+
+.user .message-content :deep(.text-block),
+.user .message-content :deep(.summary-block),
+.user .message-content :deep(.summary-block p),
+.user .message-content :deep(.summary-block li),
+.user .message-content :deep(.summary-block strong) {
+  color: #fff;
 }
 
 .message-time {

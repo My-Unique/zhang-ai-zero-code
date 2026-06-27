@@ -78,6 +78,12 @@ public class App implements Serializable {
     private Long deployedVersionNo;
 
     /**
+     * 下载次数
+     */
+    @Column("downloadCount")
+    private Long downloadCount;
+
+    /**
      * 生成状态：not_generated/generating/succeeded/failed
      */
     @Column("generationStatus")

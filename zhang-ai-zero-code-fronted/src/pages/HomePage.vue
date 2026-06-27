@@ -23,18 +23,6 @@
             @keydown.meta.enter="createApp"
             @keydown.ctrl.enter="createApp"
           />
-          <div class="generation-type-row">
-            <span>生成方式</span>
-            <a-radio-group v-model:value="selectedCodeGenType" class="generation-type-options">
-              <a-radio-button
-                v-for="item in codeGenTypeOptions"
-                :key="item.value"
-                :value="item.value"
-              >
-                {{ item.label }}
-              </a-radio-button>
-            </a-radio-group>
-          </div>
           <div class="prompt-footer">
             <div class="example-list">
               <span>试试这些：</span>
@@ -166,7 +154,6 @@ const SparklesIcon = () =>
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 const prompt = ref('')
-const selectedCodeGenType = ref<NonNullable<API.AppAddRequest['codeGenType']>>('vue_project')
 const creating = ref(false)
 const myApps = ref<API.AppVO[]>([])
 const goodApps = ref<API.AppVO[]>([])
@@ -214,12 +201,6 @@ const capabilities = [
     description: '快速发布与分享',
   },
 ]
-const codeGenTypeOptions = [
-  { label: 'Vue 多文件', value: 'vue_project' },
-  { label: 'HTML 单文件', value: 'html' },
-  { label: '原生多文件', value: 'multi_file' },
-]
-
 const myQuery = reactive<API.AppQueryRequest>({
   pageNum: 1,
   pageSize: 6,
@@ -251,7 +232,7 @@ const createApp = async () => {
 
   creating.value = true
   try {
-    const res = await addApp({ initPrompt: value, codeGenType: selectedCodeGenType.value })
+    const res = await addApp({ initPrompt: value })
     if (res.data.code === 0 && res.data.data) {
       const createdAppId = res.data.data
       prompt.value = ''
@@ -529,46 +510,6 @@ h1 span {
   box-shadow: 0 0 0 3px rgb(91 92 240 / 7%);
 }
 
-.generation-type-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 12px;
-  padding: 10px 12px;
-  border: 1px solid #eef0f5;
-  border-radius: 10px;
-  background: #fafbfc;
-}
-
-.generation-type-row > span {
-  flex-shrink: 0;
-  color: #667085;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.generation-type-options {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.generation-type-options :deep(.ant-radio-button-wrapper) {
-  height: 30px;
-  padding-inline: 10px;
-  color: #667085;
-  font-size: 12px;
-  line-height: 28px;
-  border-inline-start-width: 1px;
-  border-radius: 8px;
-}
-
-.generation-type-options :deep(.ant-radio-button-wrapper::before) {
-  display: none;
-}
-
 .prompt-footer {
   display: flex;
   align-items: center;
@@ -747,14 +688,9 @@ h1 span {
   }
 
   .prompt-footer,
-  .generation-type-row,
   .workspace-overview {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .generation-type-options {
-    justify-content: flex-start;
   }
 
   .generate-button {
