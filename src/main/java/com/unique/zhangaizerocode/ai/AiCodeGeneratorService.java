@@ -62,4 +62,18 @@ public interface AiCodeGeneratorService {
     @UserMessage("{{userMessage}}")
     TokenStream generateVueProjectCodeStream(@MemoryId long appId, @V("userMessage") String userMessage);
 
+    /**
+     * 创建 Vue 项目代码（流式）
+     */
+    @SystemMessage(fromResource = "prompt/codegen-vue-project-create-system-prompt.txt")
+    @UserMessage("{{userMessage}}")
+    TokenStream generateVueProjectCreateStream(@MemoryId long appId, @V("userMessage") String userMessage);
+
+    /**
+     * 修改 Vue 项目代码（流式）
+     */
+    @SystemMessage(fromResource = "prompt/codegen-vue-project-modify-system-prompt.txt")
+    @UserMessage("{{userMessage}}")
+    TokenStream generateVueProjectModifyStream(@MemoryId long appId, @V("userMessage") String userMessage);
+
 }

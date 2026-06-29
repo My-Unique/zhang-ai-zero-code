@@ -21,7 +21,7 @@
           <button class="user-trigger" type="button">
             <a-avatar :size="34" :src="loginUserAvatar" />
             <span class="user-copy">
-              <strong>{{ loginUserStore.loginUser.userName || '用户' }}</strong>
+              <strong>{{ loginUserDisplayName }}</strong>
               <small>{{ isAdmin ? '管理员' : '创作者' }}</small>
             </span>
             <DownOutlined />
@@ -74,6 +74,12 @@ const route = useRoute()
 const selectedKeys = ref<string[]>([route.path])
 
 const loginUserAvatar = computed(() => loginUserStore.loginUser.userAvatar?.trim() || defaultAvatar)
+const loginUserDisplayName = computed(
+  () =>
+    loginUserStore.loginUser.userName?.trim() ||
+    loginUserStore.loginUser.userAccount?.trim() ||
+    '用户',
+)
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === ACCESS_ENUM.ADMIN)
 
 router.afterEach((to) => {

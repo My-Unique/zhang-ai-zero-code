@@ -13,6 +13,7 @@ import com.unique.zhangaizerocode.core.parser.CodeParserExecutor;
 import com.unique.zhangaizerocode.core.saver.CodeFileSaverExecutor;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
+import com.unique.zhangaizerocode.model.enums.AppGenerationModeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.service.TokenStream;
@@ -75,12 +76,26 @@ public class AiCodeGeneratorFacade {
      * @param codeGenTypeEnum 生成类型
      */
     public Flux<String> generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum codeGenTypeEnum, Long appId, Long versionNo) {
+        return generateAndSaveCodeStream(userMessage, codeGenTypeEnum, appId, versionNo, AppGenerationModeEnum.MODIFY);
+    }
+
+    /**
+     * 统一入口：根据类型和生成模式生成并保存代码（流式）
+     *
+     * @param userMessage     用户提示词
+     * @param codeGenTypeEnum 生成类型
+     * @param generationMode  创建或修改模式
+     */
+    public Flux<String> generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum codeGenTypeEnum, Long appId,
+                                                  Long versionNo, AppGenerationModeEnum generationMode) {
         // 根据 appId 获取对应的 AI 服务实例
 
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型为空");
         }
-        AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId,codeGenTypeEnum,versionNo);
+        AppGenerationModeEnum effectiveMode = generationMode == null ? AppGenerationModeEnum.MODIFY : generationMode;
+        AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(
+                appId, codeGenTypeEnum, versionNo, effectiveMode);
 
         return switch (codeGenTypeEnum) {
             case HTML -> {
@@ -93,7 +108,9 @@ public class AiCodeGeneratorFacade {
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, versionNo);
             }
             case VUE_PROJECT -> {
-                TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId,userMessage);
+                TokenStream tokenStream = effectiveMode == AppGenerationModeEnum.CREATE
+                        ? aiCodeGeneratorService.generateVueProjectCreateStream(appId, userMessage)
+                        : aiCodeGeneratorService.generateVueProjectModifyStream(appId, userMessage);
                 yield processTokenStream(tokenStream);
             }
             default -> {

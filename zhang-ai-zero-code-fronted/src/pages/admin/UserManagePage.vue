@@ -71,7 +71,7 @@
             <div class="user-identity">
               <a-avatar :size="38" :src="record.userAvatar || defaultAvatar" />
               <div>
-                <strong>{{ record.userName || '未设置用户名' }}</strong>
+                <strong>{{ record.userName || record.userAccount || '未设置用户名' }}</strong>
                 <span>{{ record.userAccount }}</span>
               </div>
             </div>

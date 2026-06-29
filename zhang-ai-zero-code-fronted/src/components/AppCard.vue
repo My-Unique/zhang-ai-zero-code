@@ -81,7 +81,7 @@
       <div class="meta">
         <a-space :size="7">
           <a-avatar :size="24" :src="app.user?.userAvatar || defaultAvatar" />
-          <span>{{ app.user?.userName || ownerLabel }}</span>
+          <span>{{ app.user?.userName || app.user?.userAccount || ownerLabel }}</span>
         </a-space>
         <span class="chat-count">
           <MessageOutlined />

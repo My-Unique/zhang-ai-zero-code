@@ -13,6 +13,7 @@ import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.unique.zhangaizerocode.ai.AiCodeGenTypeRoutingService;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessage;
 import com.unique.zhangaizerocode.ai.model.message.StreamMessageTypeEnum;
+import com.unique.zhangaizerocode.ai.model.message.ToolExecutedMessage;
 import com.unique.zhangaizerocode.constant.AppConstant;
 import com.unique.zhangaizerocode.core.AiCodeGeneratorFacade;
 import com.unique.zhangaizerocode.core.builder.VueProjectBuilder;
@@ -27,6 +28,7 @@ import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.AppVersion;
 import com.unique.zhangaizerocode.model.entity.ChatHistory;
 import com.unique.zhangaizerocode.model.entity.User;
+import com.unique.zhangaizerocode.model.enums.AppGenerationModeEnum;
 import com.unique.zhangaizerocode.model.enums.AppGenerationStatusEnum;
 import com.unique.zhangaizerocode.model.enums.AppVisibilityEnum;
 import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
@@ -80,6 +82,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private CosManager cosManager;
 
 
+    /**
+     * 构建应用展示对象，补充用户信息、状态和对话轮数。
+     */
     @Override
     public AppVO getAppVO(App app) {
         if (app == null) {
@@ -99,251 +104,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return appVO;
     }
 
-    private void normalizeAppVOState(App app, AppVO appVO) {
-        Long versionNo = app.getVersionNo();
-        if (StrUtil.isBlank(appVO.getVisibility())) {
-            appVO.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
-        }
-        if (versionNo != null && versionNo > 0) {
-            String generationStatus = appVO.getGenerationStatus();
-            if (StrUtil.isBlank(generationStatus)
-                    || AppGenerationStatusEnum.NOT_GENERATED.getValue().equals(generationStatus)) {
-                appVO.setGenerationStatus(AppGenerationStatusEnum.SUCCEEDED.getValue());
-            }
-        } else if (StrUtil.isBlank(appVO.getGenerationStatus())) {
-            appVO.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
-        }
-        if (StrUtil.isBlank(app.getDeployKey())) {
-            appVO.setDeployedVersionNo(0L);
-        } else if ((appVO.getDeployedVersionNo() == null || appVO.getDeployedVersionNo() <= 0)
-                && versionNo != null && versionNo > 0) {
-            appVO.setDeployedVersionNo(versionNo);
-        }
-    }
-
-    private long countAppChatRounds(Long appId) {
-        if (appId == null) {
-            return 0;
-        }
-        return chatHistoryService.count(QueryWrapper.create()
-                .eq(ChatHistory::getAppId, appId)
-                .eq(ChatHistory::getMessageType, ChatHistoryMessageTypeEnum.USER.getValue()));
-    }
-
-    @Override
-    public boolean incrementDownloadCount(Long appId) {
-        if (appId == null || appId <= 0) {
-            return false;
-        }
-        return appMapper.incrementDownloadCount(appId) > 0;
-    }
-
-    @Override
-    public QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest) {
-        if (appQueryRequest == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
-        }
-        Long id = appQueryRequest.getId();
-        String appName = appQueryRequest.getAppName();
-        String cover = appQueryRequest.getCover();
-        String initPrompt = appQueryRequest.getInitPrompt();
-        String codeGenType = appQueryRequest.getCodeGenType();
-        String deployKey = appQueryRequest.getDeployKey();
-        Long deployedVersionNo = appQueryRequest.getDeployedVersionNo();
-        String generationStatus = appQueryRequest.getGenerationStatus();
-        String visibility = appQueryRequest.getVisibility();
-        Integer priority = appQueryRequest.getPriority();
-        Long userId = appQueryRequest.getUserId();
-        String sortField = appQueryRequest.getSortField();
-        String sortOrder = appQueryRequest.getSortOrder();
-        return QueryWrapper.create()
-                .eq("id", id)
-                .like("appName", appName)
-                .like("cover", cover)
-                .like("initPrompt", initPrompt)
-                .eq("codeGenType", codeGenType)
-                .eq("deployKey", deployKey)
-                .eq("deployedVersionNo", deployedVersionNo)
-                .eq("generationStatus", generationStatus)
-                .eq("visibility", visibility)
-                .eq("priority", priority)
-                .eq("userId", userId)
-                .orderBy(sortField, "ascend".equals(sortOrder));
-    }
-
-    @Override
-    public List<AppVO> getAppVOList(List<App> appList) {
-        if (CollUtil.isEmpty(appList)) {
-            return new ArrayList<>();
-        }
-        // 批量获取用户信息，避免 N+1 查询问题
-        Set<Long> userIds = appList.stream()
-                .map(App::getUserId)
-                .collect(Collectors.toSet());
-        Map<Long, UserVO> userVOMap = userService.listByIds(userIds).stream()
-                .collect(Collectors.toMap(User::getId, userService::getUserVO));
-        return appList.stream().map(app -> {
-            AppVO appVO = getAppVO(app);
-            UserVO userVO = userVOMap.get(app.getUserId());
-            appVO.setUser(userVO);
-            return appVO;
-        }).collect(Collectors.toList());
-    }
-
-    @Override
-    public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
-        // 1. 参数校验
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
-        ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "用户消息不能为空");
-        // 2. 查询应用信息
-        App app = this.getById(appId);
-        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 验证用户是否有权限访问该应用，仅本人可以生成代码
-        if (!app.getUserId().equals(loginUser.getId())) {
-            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限访问该应用");
-        }
-        // 4. 获取应用的代码生成类型
-        String codeGenTypeStr = app.getCodeGenType();
-        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenTypeStr);
-        if (codeGenTypeEnum == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型");
-        }
-        Long maxVersionNo = appVersionService.getMaxVersionNo(appId);
-        Long newVersionNo = maxVersionNo + 1;
-        String codePath = AppConstant.CODE_OUTPUT_ROOT_DIR
-                + File.separator + codeGenTypeEnum.getValue() + "_" + appId
-                + File.separator + "v" + newVersionNo;
-        updateGenerationStatus(appId, AppGenerationStatusEnum.GENERATING);
-
-        /*
-         * 生成新版本前，先准备一个完整的新版本目录。
-         *
-         * 为什么要做这一步：
-         * 1. 用户说“把博客改成蓝色背景”这类需求时，AI 很可能只写入被修改的文件；
-         * 2. 如果 v3 目录一开始是空的，AI 只写 App.vue / Home.vue，v3 就会缺少 package.json、vite.config.js 等文件；
-         * 3. 缺少这些根文件后，v3 就不是一个完整 Vue 项目，npm install / npm run build 都会失败；
-         * 4. 所以正确做法是：先把当前版本完整复制到新版本目录，再让 AI 覆盖需要修改的文件。
-         */
-        prepareNewVersionDirectory(app, appId, codePath);
-        String effectiveMessage = buildCodeGenerationMessage(
-                app,
-                appId,
-                message,
-                codeGenTypeEnum
-        );
-
-        // 5. 调用 AI 生成代码
-        chatHistoryService.addChatMessage(
-                appId,
-                message,
-                ChatHistoryMessageTypeEnum.USER.getValue(),
-                loginUser.getId()
-        );
-
-        AtomicInteger toolExecutionCount = new AtomicInteger();
-        Flux<String> codeStream = trackVueProjectToolExecution(
-                aiCodeGeneratorFacade.generateAndSaveCodeStream(effectiveMessage, codeGenTypeEnum, appId, newVersionNo),
-                codeGenTypeEnum,
-                toolExecutionCount
-        );
-        Flux<String> handledStream = streamHandlerExecutor
-                .doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
-
-        /*
-         * 版本保存不能只放在 doOnComplete 里。
-         *
-         * 原因：
-         * 1. doOnComplete 是一个旁路回调，它不会向前端输出任何“保存完成”的信号；
-         * 2. 如果 SSE 客户端提前断开、Knife4j 没有持续消费完整流，doOnComplete 就不会执行；
-         * 3. 结果就是代码目录可能已经创建了，但 app_version 没有保存，app.versionNo 仍然是 0；
-         * 4. 用户马上点击部署时，就会一直看到“应用暂无可部署版本，请先生成代码”。
-         *
-         * 这里用 concatWith 把“校验代码目录 + 保存版本 + 更新 app.versionNo”
-         * 串到 AI 输出流的最后一步。只有这一步成功执行后，前端才会收到“版本保存完成”的尾消息。
-         * 如果这一步失败，AppController 会把异常包装成 SSE error 事件返回，问题会直接暴露给前端。
-         */
-        return handledStream
-                .startWith("[系统] 正在分析需求并准备生成代码...\n\n")
-                .concatWith(Mono.fromCallable(() -> {
-                    log.info("AI 代码生成流完成，开始校验并保存版本，appId: {}, versionNo: {}, codePath: {}",
-                            appId, newVersionNo, codePath);
-                    validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, toolExecutionCount.get());
-                    validateGeneratedCodeBuild(codeGenTypeEnum, codePath);
-                    saveAppVersionAndUpdateCurrent(
-                            appId,
-                            newVersionNo,
-                            message,
-                            codePath,
-                            loginUser.getId()
-                    );
-                    log.info("AI 代码生成版本保存完成，appId: {}, versionNo: {}", appId, newVersionNo);
-                    return "\n\n[系统] 版本保存完成，可进行部署。\n\n";
-                }))
-                .doOnError(error -> {
-                    updateGenerationStatus(appId, AppGenerationStatusEnum.FAILED);
-                    log.error("AI 代码生成或保存版本失败，appId: {}, versionNo: {}",
-                            appId, newVersionNo, error);
-                })
-                .doFinally(signalType -> {
-                    log.info("AI 代码生成请求结束，appId: {}, versionNo: {}, signal: {}",
-                            appId, newVersionNo, signalType);
-                });
-    }
-
-    private void updateGenerationStatus(Long appId, AppGenerationStatusEnum status) {
-        App updateApp = new App();
-        updateApp.setId(appId);
-        updateApp.setGenerationStatus(status.getValue());
-        updateApp.setEditTime(LocalDateTime.now());
-        boolean updateResult = this.updateById(updateApp);
-        if (!updateResult) {
-            log.warn("更新应用生成状态失败，appId: {}, status: {}", appId, status.getValue());
-        }
-    }
-
-    private String buildCodeGenerationMessage(App app,
-                                              Long appId,
-                                              String message,
-                                              CodeGenTypeEnum codeGenTypeEnum) {
-        if (!CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
-            return message;
-        }
-
-        Long currentVersionNo = app.getVersionNo();
-        if (currentVersionNo == null || currentVersionNo <= 0) {
-            return message;
-        }
-
-        AppVersion currentVersion = appVersionService.getByAppIdAndVersionNo(appId, currentVersionNo);
-        if (currentVersion == null || StrUtil.isBlank(currentVersion.getCodePath())) {
-            return message;
-        }
-
-        File sourceDir = new File(currentVersion.getCodePath());
-        if (!sourceDir.exists() || !sourceDir.isDirectory()) {
-            return message;
-        }
-
-        StringBuilder contextBuilder = new StringBuilder();
-        contextBuilder.append("用户本次需求：\n")
-                .append(message)
-                .append("\n\n");
-
-        appendRecentUserMessages(appId, message, contextBuilder);
-
-        contextBuilder.append("""
-                下面是当前 Vue 项目的关键源码快照。
-                当前源码快照是本次修改的事实基线。
-                请基于这些源码进行修改，只调用 writeFile 写入本次确实需要修改的文件。
-                没有被用户要求修改的功能、结构和内容必须保留。
-                如果最近用户需求记录和当前源码快照不一致，以当前源码快照为准，不要补做历史需求。
-                
-                """);
-
-        appendVueProjectSourceSnapshot(sourceDir, contextBuilder);
-        return contextBuilder.toString();
-    }
-
+    /**
+     * 创建应用，生成应用名称并通过 AI 智能选择代码生成类型。
+     */
     @Override
     public Long createApp(AppAddRequest appAddRequest, User loginUser) {
         // 参数校验
@@ -377,6 +140,285 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         log.info("应用创建成功，ID: {}, 类型: {}", app.getId(), selectedCodeGenType.getValue());
         return app.getId();
     }
+
+    /**
+     * 规范应用 VO 状态，兼容旧数据中缺失的可见性、生成状态和部署版本号。
+     */
+    private void normalizeAppVOState(App app, AppVO appVO) {
+        Long versionNo = app.getVersionNo();
+        if (StrUtil.isBlank(appVO.getVisibility())) {
+            appVO.setVisibility(AppVisibilityEnum.PRIVATE.getValue());
+        }
+        if (versionNo != null && versionNo > 0) {
+            String generationStatus = appVO.getGenerationStatus();
+            if (StrUtil.isBlank(generationStatus)
+                    || AppGenerationStatusEnum.NOT_GENERATED.getValue().equals(generationStatus)) {
+                appVO.setGenerationStatus(AppGenerationStatusEnum.SUCCEEDED.getValue());
+            }
+        } else if (StrUtil.isBlank(appVO.getGenerationStatus())) {
+            appVO.setGenerationStatus(AppGenerationStatusEnum.NOT_GENERATED.getValue());
+        }
+        if (StrUtil.isBlank(app.getDeployKey())) {
+            appVO.setDeployedVersionNo(0L);
+        } else if ((appVO.getDeployedVersionNo() == null || appVO.getDeployedVersionNo() <= 0)
+                && versionNo != null && versionNo > 0) {
+            appVO.setDeployedVersionNo(versionNo);
+        }
+    }
+
+    /**
+     * 统计应用的用户对话轮数，用于列表或详情展示。
+     */
+    private long countAppChatRounds(Long appId) {
+        if (appId == null) {
+            return 0;
+        }
+        return chatHistoryService.count(QueryWrapper.create()
+                .eq(ChatHistory::getAppId, appId)
+                .eq(ChatHistory::getMessageType, ChatHistoryMessageTypeEnum.USER.getValue()));
+    }
+
+    /**
+     * 增加应用下载次数。
+     */
+    @Override
+    public boolean incrementDownloadCount(Long appId) {
+        if (appId == null || appId <= 0) {
+            return false;
+        }
+        return appMapper.incrementDownloadCount(appId) > 0;
+    }
+
+    /**
+     * 根据查询请求构建应用分页查询条件。
+     */
+    @Override
+    public QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest) {
+        if (appQueryRequest == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数为空");
+        }
+        Long id = appQueryRequest.getId();
+        String appName = appQueryRequest.getAppName();
+        String cover = appQueryRequest.getCover();
+        String initPrompt = appQueryRequest.getInitPrompt();
+        String codeGenType = appQueryRequest.getCodeGenType();
+        String deployKey = appQueryRequest.getDeployKey();
+        Long deployedVersionNo = appQueryRequest.getDeployedVersionNo();
+        String generationStatus = appQueryRequest.getGenerationStatus();
+        String visibility = appQueryRequest.getVisibility();
+        Integer priority = appQueryRequest.getPriority();
+        Long userId = appQueryRequest.getUserId();
+        String sortField = appQueryRequest.getSortField();
+        String sortOrder = appQueryRequest.getSortOrder();
+        return QueryWrapper.create()
+                .eq("id", id)
+                .like("appName", appName)
+                .like("cover", cover)
+                .like("initPrompt", initPrompt)
+                .eq("codeGenType", codeGenType)
+                .eq("deployKey", deployKey)
+                .eq("deployedVersionNo", deployedVersionNo)
+                .eq("generationStatus", generationStatus)
+                .eq("visibility", visibility)
+                .eq("priority", priority)
+                .eq("userId", userId)
+                .orderBy(sortField, "ascend".equals(sortOrder));
+    }
+
+    /**
+     * 批量构建应用展示对象，并批量补充用户信息。
+     */
+    @Override
+    public List<AppVO> getAppVOList(List<App> appList) {
+        if (CollUtil.isEmpty(appList)) {
+            return new ArrayList<>();
+        }
+        // 批量获取用户信息，避免 N+1 查询问题
+        Set<Long> userIds = appList.stream()
+                .map(App::getUserId)
+                .collect(Collectors.toSet());
+        Map<Long, UserVO> userVOMap = userService.listByIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, userService::getUserVO));
+        return appList.stream().map(app -> {
+            AppVO appVO = getAppVO(app);
+            UserVO userVO = userVOMap.get(app.getUserId());
+            appVO.setUser(userVO);
+            return appVO;
+        }).collect(Collectors.toList());
+    }
+
+    /**
+     * 处理用户对话并流式生成代码，最后校验目录、构建项目并保存新版本。
+     */
+    @Override
+    public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
+        // 1. 参数校验
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+        // 2. 查询应用信息
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        // 3. 验证用户是否有权限访问该应用，仅本人可以生成代码
+        if (!app.getUserId().equals(loginUser.getId())) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限访问该应用");
+        }
+        // 4. 获取应用的代码生成类型
+        String codeGenTypeStr = app.getCodeGenType();
+        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenTypeStr);
+        if (codeGenTypeEnum == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型");
+        }
+        Long maxVersionNo = appVersionService.getMaxVersionNo(appId);
+        Long newVersionNo = maxVersionNo + 1;
+        AppGenerationModeEnum generationMode = newVersionNo <= 1
+                ? AppGenerationModeEnum.CREATE
+                : AppGenerationModeEnum.MODIFY;
+        log.info("AI generation request resolved, appId: {}, codeGenType: {}, newVersionNo: {}, generationMode: {}",
+                appId, codeGenTypeEnum.getValue(), newVersionNo, generationMode);
+        String codePath = AppConstant.CODE_OUTPUT_ROOT_DIR
+                + File.separator + codeGenTypeEnum.getValue() + "_" + appId
+                + File.separator + "v" + newVersionNo;
+        updateGenerationStatus(appId, AppGenerationStatusEnum.GENERATING);
+
+        /*
+         * 生成新版本前，先准备一个完整的新版本目录。
+         *
+         * 为什么要做这一步：
+         * 1. 用户说“把博客改成蓝色背景”这类需求时，AI 很可能只写入被修改的文件；
+         * 2. 如果 v3 目录一开始是空的，AI 只写 App.vue / Home.vue，v3 就会缺少 package.json、vite.config.js 等文件；
+         * 3. 缺少这些根文件后，v3 就不是一个完整 Vue 项目，npm install / npm run build 都会失败；
+         * 4. 所以正确做法是：先把当前版本完整复制到新版本目录，再让 AI 覆盖需要修改的文件。
+         */
+        prepareNewVersionDirectory(app, appId, codePath);
+        String effectiveMessage = buildCodeGenerationMessage(
+                app,
+                appId,
+                message,
+                codeGenTypeEnum
+        );
+
+        // 5. 调用 AI 生成代码
+        chatHistoryService.addChatMessage(
+                appId,
+                message,
+                ChatHistoryMessageTypeEnum.USER.getValue(),
+                loginUser.getId()
+        );
+
+        AtomicInteger mutationToolExecutionCount = new AtomicInteger();
+        Flux<String> codeStream = trackVueProjectToolExecution(
+                aiCodeGeneratorFacade.generateAndSaveCodeStream(
+                        effectiveMessage, codeGenTypeEnum, appId, newVersionNo, generationMode),
+                codeGenTypeEnum,
+                mutationToolExecutionCount
+        );
+        Flux<String> handledStream = streamHandlerExecutor
+                .doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
+
+        /*
+         * 版本保存不能只放在 doOnComplete 里。
+         *
+         * 原因：
+         * 1. doOnComplete 是一个旁路回调，它不会向前端输出任何“保存完成”的信号；
+         * 2. 如果 SSE 客户端提前断开、Knife4j 没有持续消费完整流，doOnComplete 就不会执行；
+         * 3. 结果就是代码目录可能已经创建了，但 app_version 没有保存，app.versionNo 仍然是 0；
+         * 4. 用户马上点击部署时，就会一直看到“应用暂无可部署版本，请先生成代码”。
+         *
+         * 这里用 concatWith 把“校验代码目录 + 保存版本 + 更新 app.versionNo”
+         * 串到 AI 输出流的最后一步。只有这一步成功执行后，前端才会收到“版本保存完成”的尾消息。
+         * 如果这一步失败，AppController 会把异常包装成 SSE error 事件返回，问题会直接暴露给前端。
+         */
+        return handledStream
+                .startWith("[系统] 正在分析需求并准备生成代码...\n\n")
+                .concatWith(Mono.fromCallable(() -> {
+                    log.info("AI 代码生成流完成，开始校验并保存版本，appId: {}, versionNo: {}, codePath: {}",
+                            appId, newVersionNo, codePath);
+                    validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, mutationToolExecutionCount.get());
+                    validateGeneratedCodeBuild(codeGenTypeEnum, codePath);
+                    saveAppVersionAndUpdateCurrent(
+                            appId,
+                            newVersionNo,
+                            message,
+                            codePath,
+                            loginUser.getId()
+                    );
+                    log.info("AI 代码生成版本保存完成，appId: {}, versionNo: {}", appId, newVersionNo);
+                    return "\n\n[系统] 版本保存完成，可进行部署。\n\n";
+                }))
+                .doOnError(error -> {
+                    updateGenerationStatus(appId, AppGenerationStatusEnum.FAILED);
+                    log.error("AI 代码生成或保存版本失败，appId: {}, versionNo: {}",
+                            appId, newVersionNo, error);
+                })
+                .doFinally(signalType -> {
+                    log.info("AI 代码生成请求结束，appId: {}, versionNo: {}, signal: {}",
+                            appId, newVersionNo, signalType);
+                });
+    }
+
+    /**
+     * 更新应用生成状态。
+     */
+    private void updateGenerationStatus(Long appId, AppGenerationStatusEnum status) {
+        App updateApp = new App();
+        updateApp.setId(appId);
+        updateApp.setGenerationStatus(status.getValue());
+        updateApp.setEditTime(LocalDateTime.now());
+        boolean updateResult = this.updateById(updateApp);
+        if (!updateResult) {
+            log.warn("更新应用生成状态失败，appId: {}, status: {}", appId, status.getValue());
+        }
+    }
+
+    /**
+     * 构建代码生成提示词，Vue 项目会追加当前版本源码快照。
+     */
+    private String buildCodeGenerationMessage(App app,
+                                              Long appId,
+                                              String message,
+                                              CodeGenTypeEnum codeGenTypeEnum) {
+        if (!CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
+            return message;
+        }
+
+        Long currentVersionNo = app.getVersionNo();
+        if (currentVersionNo == null || currentVersionNo <= 0) {
+            return message;
+        }
+
+        AppVersion currentVersion = appVersionService.getByAppIdAndVersionNo(appId, currentVersionNo);
+        if (currentVersion == null || StrUtil.isBlank(currentVersion.getCodePath())) {
+            return message;
+        }
+
+        File sourceDir = new File(currentVersion.getCodePath());
+        if (!sourceDir.exists() || !sourceDir.isDirectory()) {
+            return message;
+        }
+
+        StringBuilder contextBuilder = new StringBuilder();
+        contextBuilder.append("用户本次需求：\n")
+                .append(message)
+                .append("\n\n");
+
+        appendRecentUserMessages(appId, message, contextBuilder);
+
+        contextBuilder.append("""
+                下面是当前 Vue 项目的文件列表。
+                本轮不提供源码内容快照，请通过 readDir / readFile 工具了解项目结构和文件内容。
+                修改任何已有文件前，必须先调用 readFile 读取该文件当前内容。
+                读取成功后，再根据用户本次需求调用 modifyFile / writeFile / deleteFile。
+                没有被用户要求修改的功能、结构和内容必须保留。
+                
+                """);
+
+        appendVueProjectFileList(sourceDir, contextBuilder);
+        return contextBuilder.toString();
+    }
+
+    /**
+     * 追加最近的用户需求记录，帮助模型理解上下文但不补做历史任务。
+     */
     private void appendRecentUserMessages(Long appId, String currentMessage, StringBuilder contextBuilder) {
         List<ChatHistory> recentUserMessages = chatHistoryService.list(
                 QueryWrapper.create()
@@ -409,43 +451,23 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         contextBuilder.append("\n");
     }
 
-    private void appendVueProjectSourceSnapshot(File sourceDir, StringBuilder contextBuilder) {
-        List<String> relativeFilePaths = listVueProjectSnapshotFiles(sourceDir);
-        int maxTotalLength = 32000;
-        int maxSingleFileLength = 6000;
-        int appendedLength = 0;
+    /**
+     * 将当前 Vue 项目的文件列表追加到 AI 输入上下文中，不包含源码内容。
+     */
+    private void appendVueProjectFileList(File sourceDir, StringBuilder contextBuilder) {
+        List<String> relativeFilePaths = listVueProjectContextFiles(sourceDir);
 
         contextBuilder.append("<project_files>\n");
         for (String relativeFilePath : relativeFilePaths) {
             contextBuilder.append("- ").append(relativeFilePath).append("\n");
         }
         contextBuilder.append("</project_files>\n\n");
-        contextBuilder.append("<current_project>\n");
-        for (String relativeFilePath : relativeFilePaths) {
-            File file = new File(sourceDir, relativeFilePath);
-            if (!file.exists() || !file.isFile()) {
-                continue;
-            }
-            String fileContent = FileUtil.readUtf8String(file);
-            if (fileContent.length() > maxSingleFileLength) {
-                fileContent = fileContent.substring(0, maxSingleFileLength)
-                        + "\n<!-- 文件内容过长，后续内容已省略 -->";
-            }
-
-            String fileBlock = "<file path=\"" + relativeFilePath + "\">\n"
-                    + fileContent
-                    + "\n</file>\n\n";
-            if (appendedLength + fileBlock.length() > maxTotalLength) {
-                contextBuilder.append("<!-- 源码快照过长，后续文件已省略 -->\n");
-                break;
-            }
-            contextBuilder.append(fileBlock);
-            appendedLength += fileBlock.length();
-        }
-        contextBuilder.append("</current_project>\n");
     }
 
-    private List<String> listVueProjectSnapshotFiles(File sourceDir) {
+    /**
+     * 收集需要放入 Vue 上下文的文件列表，并按关键文件优先排序。
+     */
+    private List<String> listVueProjectContextFiles(File sourceDir) {
         Path root = sourceDir.toPath().toAbsolutePath().normalize();
         List<String> priorityFiles = List.of(
                 "package.json",
@@ -464,7 +486,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return FileUtil.loopFiles(sourceDir).stream()
                 .map(file -> root.relativize(file.toPath().toAbsolutePath().normalize()).toString().replace('\\', '/'))
                 .filter(this::isEditableSourceFile)
-                .filter(filePath -> !isVueSnapshotIgnoredFile(filePath))
+                .filter(filePath -> !isVueContextIgnoredFile(filePath))
                 .distinct()
                 .sorted(Comparator
                         .comparingInt((String filePath) -> priorityOrder.getOrDefault(filePath, Integer.MAX_VALUE))
@@ -474,7 +496,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .toList();
     }
 
-    private boolean isVueSnapshotIgnoredFile(String filePath) {
+    /**
+     * 判断文件是否需要从 Vue 上下文文件列表中排除。
+     */
+    private boolean isVueContextIgnoredFile(String filePath) {
         String normalized = filePath.replace('\\', '/');
         String fileName = FileUtil.getName(normalized);
         return normalized.startsWith(".idea/")
@@ -485,9 +510,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .contains(fileName);
     }
 
+    /**
+     * 跟踪 Vue 项目生成过程中的文件变更工具调用次数。
+     */
     private Flux<String> trackVueProjectToolExecution(Flux<String> codeStream,
                                                       CodeGenTypeEnum codeGenTypeEnum,
-                                                      AtomicInteger toolExecutionCount) {
+                                                      AtomicInteger mutationToolExecutionCount) {
         if (!CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
             return codeStream;
         }
@@ -495,8 +523,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             try {
                 StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
                 if (StreamMessageTypeEnum.TOOL_EXECUTED.getValue().equals(streamMessage.getType())) {
-                    int count = toolExecutionCount.incrementAndGet();
-                    log.info("Vue 项目本轮已执行文件写入工具次数: {}", count);
+                    ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
+                    if (isSuccessfulVueProjectMutation(toolExecutedMessage)) {
+                        int count = mutationToolExecutionCount.incrementAndGet();
+                        log.info("Vue 项目本轮已执行文件变更工具次数: {}", count);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("解析 Vue 项目流消息失败，chunk: {}", chunk, e);
@@ -504,7 +535,33 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         });
     }
 
-    private void validateGeneratedCodeDirectory(CodeGenTypeEnum codeGenTypeEnum, String codePath, int toolExecutionCount) {
+    /**
+     * 只有真正改变项目文件的工具才允许推动新版本保存。
+     */
+    private boolean isVueProjectMutationTool(String toolName) {
+        return Set.of("writeFile", "modifyFile", "deleteFile").contains(toolName);
+    }
+
+    /**
+     * 只有成功执行的文件变更工具才计入本轮有效修改。
+     */
+    private boolean isSuccessfulVueProjectMutation(ToolExecutedMessage toolExecutedMessage) {
+        if (toolExecutedMessage == null || !isVueProjectMutationTool(toolExecutedMessage.getName())) {
+            return false;
+        }
+        String result = toolExecutedMessage.getResult();
+        if (StrUtil.isBlank(result)) {
+            return false;
+        }
+        String lowerResult = result.toLowerCase(Locale.ROOT);
+        return result.contains("成功")
+                || lowerResult.contains("success");
+    }
+
+    /**
+     * 校验生成代码目录是否存在，并校验 Vue 项目是否具备最小工程结构。
+     */
+    private void validateGeneratedCodeDirectory(CodeGenTypeEnum codeGenTypeEnum, String codePath, int mutationToolExecutionCount) {
         File codeDir = new File(codePath);
         ThrowUtils.throwIf(!codeDir.exists() || !codeDir.isDirectory(),
                 ErrorCode.SYSTEM_ERROR, "代码生成失败，输出目录不存在");
@@ -534,12 +591,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
              * 如果模型本轮没有真实调用 writeFile，目录里的文件仍然是旧版本，
              * 但只检查 package.json / src/App.vue 是否存在会误判为生成成功。
              *
-             * 所以 Vue 项目必须要求本轮至少执行过一次文件写入工具。
+             * 所以 Vue 项目必须要求本轮至少执行过一次文件变更工具。
              * 否则就不保存 app_version，也不更新 app.versionNo，避免出现“说改了但页面没变”的假版本。
              */
-            ThrowUtils.throwIf(toolExecutionCount <= 0,
+            ThrowUtils.throwIf(mutationToolExecutionCount <= 0,
                     ErrorCode.SYSTEM_ERROR,
-                    "Vue 项目生成失败，本轮没有执行任何文件写入工具");
+                    "Vue 项目生成失败，本轮没有执行任何文件写入、修改或删除工具");
 
             List<String> requiredFiles = List.of(
                     "package.json",
@@ -559,6 +616,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 校验 Vue 项目是否可以正常构建。
+     */
     private void validateGeneratedCodeBuild(CodeGenTypeEnum codeGenTypeEnum, String codePath) {
         if (codeGenTypeEnum != CodeGenTypeEnum.VUE_PROJECT) {
             return;
@@ -569,6 +629,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 "Vue 项目构建失败，生成代码存在语法错误或依赖问题，请重新生成");
     }
 
+    /**
+     * 创建新版本目录；有历史版本时先复制当前完整版本作为修改基线。
+     */
     private void prepareNewVersionDirectory(App app, Long appId, String newCodePath) {
         /*
          * 这里负责把“新版本目录”准备成一个完整项目目录。
@@ -629,6 +692,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         FileUtil.copyContent(sourceDir, targetDir, true);
     }
 
+    /**
+     * 保存应用版本记录，并更新应用当前版本号。
+     */
     private void saveAppVersionAndUpdateCurrent(Long appId, Long versionNo, String userMessage,
                                                 String codePath, Long userId) {
         AppVersion appVersion = new AppVersion();
@@ -654,6 +720,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
 
+    /**
+     * 生成当前版本的临时预览地址，并异步更新当前版本封面。
+     */
     @Override
     public String previewApp(Long appId, User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
@@ -677,6 +746,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return previewUrl;
     }
 
+    /**
+     * 部署应用当前版本，生成正式访问地址并异步更新部署封面。
+     */
     @Override
     public String deployApp(Long appId, User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
@@ -766,6 +838,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
 
+    /**
+     * 异步生成当前预览地址的截图，并只在版本未变化时更新封面。
+     */
     private void generateCurrentPreviewScreenshotAsync(Long appId, String previewUrl, Long versionNo) {
         Thread.startVirtualThread(() -> {
             try {
@@ -801,6 +876,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         });
     }
 
+    /**
+     * 定时修复已经部署但缺少封面的应用。
+     */
     @Scheduled(cron = "0 0/30 * * * ?")
     public void repairMissingCoverApps() {
         List<App> deployedApps = this.list(QueryWrapper.create()
@@ -816,6 +894,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 });
     }
 
+    /**
+     * 下线应用并清理正式部署目录。
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Boolean undeployApp(Long appId, User loginUser) {
@@ -842,6 +923,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return true;
     }
 
+    /**
+     * 停止应用生成，将应用生成状态标记为失败。
+     */
     @Override
     public Boolean stopGeneration(Long appId, User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
@@ -853,6 +937,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
 
+    /**
+     * 校验当前用户是否有权限操作应用。
+     */
     private void checkAppAuth(App app, User loginUser) {
         if (app == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "应用不存在");
@@ -863,6 +950,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 查询应用的版本历史列表。
+     */
     @Override
     public List<AppVersionVO> listAppVersions(Long appId, HttpServletRequest httpServletRequest) {
         User loginUser = userService.getLoginUser(httpServletRequest);
@@ -875,6 +965,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return versionList.stream().map(this::toAppVersionVO).toList();
     }
 
+    /**
+     * 回滚应用到指定版本；如果应用已部署，同时同步部署目录。
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Boolean rollbackVersion(AppRollbackVersionRequest request, HttpServletRequest httpServletRequest) {
@@ -919,6 +1012,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return true;
     }
 
+    /**
+     * 对比两个版本中指定文件的源码内容。
+     */
     @Override
     public AppVersionDiffVO diffVersion(AppVersionDiffRequest request, HttpServletRequest httpServletRequest) {
         User loginUser = userService.getLoginUser(httpServletRequest);
@@ -958,6 +1054,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return diffVO;
     }
 
+    /**
+     * 列出指定版本中允许在线查看或编辑的源码文件。
+     */
     @Override
     public List<String> listVersionFiles(Long appId, Long versionNo, HttpServletRequest request) {
         AppVersion version = getAuthorizedVersion(appId, versionNo, request);
@@ -971,6 +1070,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .toList();
     }
 
+    /**
+     * 读取指定版本中的单个源码文件内容。
+     */
     @Override
     public AppVersionFileVO readVersionFile(AppVersionFileRequest request, HttpServletRequest httpServletRequest) {
         validateVersionFileRequest(request, false);
@@ -985,6 +1087,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return vo;
     }
 
+    /**
+     * 保存手动编辑后的文件内容，并生成一个新的应用版本。
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AppVersionVO saveVersionFile(AppVersionFileRequest request, HttpServletRequest httpServletRequest) {
@@ -1023,6 +1128,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return toAppVersionVO(savedVersion);
     }
 
+    /**
+     * 生成指定历史版本的临时预览地址，不改变应用当前版本。
+     */
     @Override
     public String previewVersion(Long appId, Long versionNo, HttpServletRequest request) {
         AppVersion version = getAuthorizedVersion(appId, versionNo, request);
@@ -1032,6 +1140,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
     }
 
+    /**
+     * 获取指定版本并校验当前用户访问权限。
+     */
     private AppVersion getAuthorizedVersion(Long appId, Long versionNo, HttpServletRequest request) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 id 不能为空");
         ThrowUtils.throwIf(versionNo == null || versionNo <= 0, ErrorCode.PARAMS_ERROR, "版本号不能为空");
@@ -1043,6 +1154,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return version;
     }
 
+    /**
+     * 根据版本代码目录解析文件路径，并防止路径穿越。
+     */
     private File resolveVersionFile(AppVersion version, String filePath) {
         Path root = Path.of(version.getCodePath()).toAbsolutePath().normalize();
         Path target = root.resolve(filePath).normalize();
@@ -1052,6 +1166,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return target.toFile();
     }
 
+    /**
+     * 判断文件是否属于允许在线查看或编辑的源码文件。
+     */
     private boolean isEditableSourceFile(String filePath) {
         String normalized = filePath.replace('\\', '/');
         if (normalized.startsWith("node_modules/")
@@ -1066,6 +1183,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .contains(suffix);
     }
 
+    /**
+     * 校验版本文件读写请求参数。
+     */
     private void validateVersionFileRequest(AppVersionFileRequest request, boolean requireContent) {
         ThrowUtils.throwIf(request == null, ErrorCode.PARAMS_ERROR);
         ThrowUtils.throwIf(StrUtil.isBlank(request.getFilePath()), ErrorCode.PARAMS_ERROR, "文件路径不能为空");
@@ -1076,6 +1196,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 将应用版本实体转换为展示对象。
+     */
     private AppVersionVO toAppVersionVO(AppVersion version) {
         AppVersionVO vo = new AppVersionVO();
         BeanUtil.copyProperties(version, vo);
@@ -1135,6 +1258,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 删除应用，同时清理代码目录、预览目录、部署目录、封面和版本记录。
+     */
     @Transactional(rollbackFor = Exception.class)
     @Override
     public boolean removeById(Serializable id) {
@@ -1158,6 +1284,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         return super.removeById(id);
     }
 
+    /**
+     * 清理应用关联的本地代码、部署预览目录和 COS 封面。
+     */
     private void cleanupAppFiles(App app, Long appId) {
         try {
             if (app != null && StrUtil.isNotBlank(app.getCodeGenType())) {
@@ -1182,6 +1311,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 当封面 URL 已变化时删除旧封面文件。
+     */
     private void deleteAppCoverIfChanged(String oldCover, String newCover, Long appId) {
         if (StrUtil.isBlank(oldCover) || Objects.equals(oldCover, newCover)) {
             return;
@@ -1189,6 +1321,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         deleteAppCover(oldCover, appId);
     }
 
+    /**
+     * 删除 COS 中的应用封面文件。
+     */
     private void deleteAppCover(String coverUrl, Long appId) {
         if (StrUtil.isBlank(coverUrl)) {
             return;
@@ -1200,6 +1335,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
     }
 
+    /**
+     * 删除本地部署目录或预览目录。
+     */
     private void deleteDeployDir(String deployKey) {
         if (StrUtil.isBlank(deployKey)) {
             return;

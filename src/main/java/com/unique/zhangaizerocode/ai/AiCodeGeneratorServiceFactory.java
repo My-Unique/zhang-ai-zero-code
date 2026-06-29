@@ -2,9 +2,10 @@ package com.unique.zhangaizerocode.ai;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.unique.zhangaizerocode.ai.tools.FileWriteTool;
+import com.unique.zhangaizerocode.ai.tools.*;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
+import com.unique.zhangaizerocode.model.enums.AppGenerationModeEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
 import com.unique.zhangaizerocode.service.ChatHistoryService;
 import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
@@ -41,6 +42,8 @@ public class AiCodeGeneratorServiceFactory {
     private ChatHistoryService chatHistoryService;
     @Resource
     private StreamingChatModel reasoningStreamingChatModel;
+    @Resource
+    private ToolManager toolManager;
     /**
      * AI 服务实例缓存
      * 缓存策略：
@@ -53,7 +56,7 @@ public class AiCodeGeneratorServiceFactory {
             .expireAfterWrite(Duration.ofMinutes(30))
             .expireAfterAccess(Duration.ofMinutes(10))
             .removalListener((key, value, cause) ->
-                log.debug("AI 服务实例被移除，缓存键: {}, 原因: {}", key, cause)
+                    log.debug("AI 服务实例被移除，缓存键: {}, 原因: {}", key, cause)
             )
             .build();
 
@@ -70,7 +73,7 @@ public class AiCodeGeneratorServiceFactory {
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId) {
         // 使用serviceCache获取服务实例，如果缓存中没有则创建新的实例
         // 使用lambda表达式作为缓存未命中时的回调函数
-        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML,1L);
+        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML, 1L);
 
     }
     /**
@@ -82,30 +85,43 @@ public class AiCodeGeneratorServiceFactory {
     /**
      * 构建缓存键
      */
-    private String buildCacheKey(long appId, CodeGenTypeEnum codeGenType, Long versionNo) {
+    private String buildCacheKey(long appId, CodeGenTypeEnum codeGenType, Long versionNo,
+                                 AppGenerationModeEnum generationMode) {
         if (CodeGenTypeEnum.VUE_PROJECT.equals(codeGenType)) {
-            return appId + "_" + codeGenType.getValue() + "_" + versionNo;
+            return appId + "_" + codeGenType.getValue() + "_" + versionNo + "_" + generationMode.name().toLowerCase();
         }
         return appId + "_" + codeGenType.getValue();
     }
-    public AiCodeGeneratorService getAiCodeGeneratorService(long appId,CodeGenTypeEnum codeGenType,Long versionNo) {
+
+    public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, Long versionNo) {
+        return getAiCodeGeneratorService(appId, codeGenType, versionNo, AppGenerationModeEnum.MODIFY);
+    }
+
+    public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, Long versionNo,
+                                                            AppGenerationModeEnum generationMode) {
         // 使用serviceCache获取服务实例，如果缓存中没有则创建新的实例
         // 使用lambda表达式作为缓存未命中时的回调函数
-        log.info("为 appId: {}, versionNo: {} 创建新的 AI 服务实例", appId, versionNo);
+        log.info("为 appId: {}, versionNo: {}, generationMode: {} 创建新的 AI 服务实例",
+                appId, versionNo, generationMode);
         if (versionNo == null || versionNo <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "版本号不能为空");
         }
+        if (generationMode == null) {
+            generationMode = AppGenerationModeEnum.MODIFY;
+        }
 
-        String cacheKey = buildCacheKey(appId, codeGenType,versionNo);
-        return serviceCache.get(cacheKey, key -> createAiCodeGeneratorService(appId, codeGenType,versionNo));
+        AppGenerationModeEnum effectiveMode = generationMode;
+        String cacheKey = buildCacheKey(appId, codeGenType, versionNo, effectiveMode);
+        return serviceCache.get(cacheKey, key -> createAiCodeGeneratorService(appId, codeGenType, versionNo, effectiveMode));
 
     }
 
     /**
      * 创建新的ai服务实例
      **/
-    private AiCodeGeneratorService createAiCodeGeneratorService(long appId,CodeGenTypeEnum codeGenType,Long versionNo) {
-        log.info("为 appId: {} 创建新的 AI 服务实例", appId);
+    private AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, Long versionNo,
+                                                                AppGenerationModeEnum generationMode) {
+        log.info("为 appId: {}, generationMode: {} 创建新的 AI 服务实例", appId, generationMode);
         // 根据 appId 构建独立的对话记忆
         MessageWindowChatMemory chatMemory = MessageWindowChatMemory
                 .builder()
@@ -133,37 +149,42 @@ public class AiCodeGeneratorServiceFactory {
         } else {
             chatHistoryService.loadChatHistoryToMemory(appId, chatMemory, 20);
         }
-        return switch (codeGenType)
-        {
-            case VUE_PROJECT ->
-                AiServices.builder(AiCodeGeneratorService.class)
+        return switch (codeGenType) {
+            case VUE_PROJECT -> {
+                log.info("AI tools enabled for codeGenType: {}, appId: {}, versionNo: {}, generationMode: {}, tools: {}",
+                        codeGenType.getValue(), appId, versionNo, generationMode,
+                        toolManager.getToolNames(versionNo, generationMode));
+                yield AiServices.builder(AiCodeGeneratorService.class)
                         // 非流式返回用 chatModel
 //                        .chatModel(chatModel)
                         .streamingChatModel(reasoningStreamingChatModel)
-                        .chatMemory(chatMemory)
-                       // 因为有MemoryId 所以必须配置这个
-                        .chatMemoryProvider(memoryId-> chatMemory)
-                        .tools(new FileWriteTool(versionNo))
+                        // 因为有MemoryId 所以必须配置这个
+                        .chatMemoryProvider(memoryId -> chatMemory)
+                        .tools((Object[]) toolManager.getTools(versionNo, generationMode))
+
                         //幻觉工具名称策略
                         .hallucinatedToolNameStrategy(toolExecutionRequest -> ToolExecutionResultMessage.from(
-                                toolExecutionRequest,"Error:There is no tool named " + toolExecutionRequest.name()
+                                toolExecutionRequest, "Error:There is no tool named " + toolExecutionRequest.name()
                         ))
                         .build();
+            }
 
-            case  HTML,MULTI_FILE ->
-                    //有{}的话 就是一个代码块 需要有返回值才行
-                    AiServices.builder(AiCodeGeneratorService.class)
-                               .chatModel(chatModel)
-                               .streamingChatModel(openAiStreamingChatModel)
-                               .chatMemory(chatMemory)
-                               .build();
+            case HTML, MULTI_FILE -> {
+                log.info("AI tools disabled for codeGenType: {}, appId: {}, versionNo: {}. This path uses code-block streaming and saver parsing.",
+                        codeGenType.getValue(), appId, versionNo);
+                //有{}的话 就是一个代码块 需要有返回值才行
+                yield AiServices.builder(AiCodeGeneratorService.class)
+                        .chatModel(chatModel)
+                        .streamingChatModel(openAiStreamingChatModel)
+                        .chatMemory(chatMemory)
+                        .build();
+            }
 
 
-            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR,"不支持的代码生成类型: " + codeGenType);
+            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型: " + codeGenType);
         };
 
     }
-
 
 
 }

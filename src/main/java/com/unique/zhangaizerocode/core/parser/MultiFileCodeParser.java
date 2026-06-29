@@ -6,9 +6,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
-    private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
-    private static final Pattern CSS_CODE_PATTERN = Pattern.compile("```css\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
-    private static final Pattern JS_CODE_PATTERN = Pattern.compile("```(?:js|javascript)\\s*\\n([\\s\\S]*?)```", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\s*\\R?([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CSS_CODE_PATTERN = Pattern.compile("```css\\s*\\R?([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern JS_CODE_PATTERN = Pattern.compile("```(?:js|javascript)\\s*\\R?([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
     private static final Pattern TOOL_MARKER_LINE_PATTERN = Pattern.compile(
             "(?m)^\\s*\\[(?:工具调用|正在编写)](?:\\s*写入文件)?\\s+[^\\r\\n]+\\s*\\R?"
     );
@@ -22,7 +22,7 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
         String jsCode = extractCodeByPattern(codeContent, JS_CODE_PATTERN);
         // 设置HTML代码
         if (htmlCode != null && !htmlCode.trim().isEmpty()) {
-            result.setHtmlCode(cleanGeneratedCode(htmlCode));
+            result.setHtmlCode(cleanHtmlDocument(htmlCode));
         }
         // 设置CSS代码
         if (cssCode != null && !cssCode.trim().isEmpty()) {
@@ -54,5 +54,33 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
 
     private static String cleanGeneratedCode(String codeContent) {
         return TOOL_MARKER_LINE_PATTERN.matcher(codeContent).replaceAll("").trim();
+    }
+
+    private static String cleanHtmlDocument(String codeContent) {
+        String code = cleanGeneratedCode(codeContent)
+                .replaceFirst("(?is)^\\s*```html\\s*", "")
+                .replaceFirst("(?is)^\\s*```\\s*", "")
+                .replaceFirst("(?is)\\s*```\\s*$", "")
+                .trim();
+
+        int startIndex = findHtmlStartIndex(code);
+        if (startIndex > 0) {
+            code = code.substring(startIndex).trim();
+        }
+
+        int endIndex = code.toLowerCase().lastIndexOf("</html>");
+        if (endIndex >= 0) {
+            code = code.substring(0, endIndex + "</html>".length()).trim();
+        }
+        return code;
+    }
+
+    private static int findHtmlStartIndex(String code) {
+        String lowerCode = code.toLowerCase();
+        int doctypeIndex = lowerCode.indexOf("<!doctype");
+        if (doctypeIndex >= 0) {
+            return doctypeIndex;
+        }
+        return lowerCode.indexOf("<html");
     }
 }

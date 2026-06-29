@@ -157,16 +157,75 @@
         </div>
 
         <div class="composer-wrap">
+          <a-alert
+            v-if="selectedVisualElement"
+            class="selected-element-alert"
+            type="info"
+            closable
+            @close="clearSelectedVisualElement"
+          >
+            <template #message>
+              <div class="selected-element-info">
+                <div>
+                  <strong>选中元素：</strong>
+                  {{ selectedVisualElementLabel }}
+                </div>
+                <div v-if="selectedVisualElementText">
+                  <strong>内容：</strong>
+                  {{ selectedVisualElementText }}
+                </div>
+                <div v-if="selectedVisualElement.pagePath">
+                  <strong>页面路径：</strong>
+                  {{ selectedVisualElement.pagePath }}
+                </div>
+                <div>
+                  <strong>选择器：</strong>
+                  {{ selectedVisualElement.selector }}
+                </div>
+              </div>
+            </template>
+          </a-alert>
+          <div v-if="attachments.length" class="attachment-list">
+            <span
+              v-for="attachment in attachments"
+              :key="attachment.id"
+              class="attachment-chip"
+            >
+              <PaperClipOutlined />
+              <span>{{ attachment.name }}</span>
+              <button type="button" @click="removeAttachment(attachment.id)">
+                <CloseOutlined />
+              </button>
+            </span>
+          </div>
           <div class="composer">
             <a-textarea
               v-model:value="inputMessage"
               :auto-size="{ minRows: 3, maxRows: 7 }"
-              placeholder="继续描述要新增或修改的内容..."
+              :placeholder="composerPlaceholder"
               @keydown.meta.enter.prevent="sendMessage"
               @keydown.ctrl.enter.prevent="sendMessage"
             />
             <div class="composer-footer">
               <div class="composer-hint">
+                <input
+                  ref="attachmentInputRef"
+                  class="attachment-input"
+                  type="file"
+                  multiple
+                  accept="image/*,.txt,.md,.json,.csv,.yml,.yaml"
+                  @change="handleAttachmentChange"
+                />
+                <a-button
+                  class="attachment-button"
+                  size="small"
+                  type="text"
+                  :loading="uploadingAttachment"
+                  :disabled="generating"
+                  @click="triggerAttachmentInput"
+                >
+                  <PaperClipOutlined /> 附件
+                </a-button>
                 <span><CodeOutlined /> 支持详细页面需求</span>
                 <span>Ctrl + Enter 发送</span>
               </div>
@@ -191,10 +250,10 @@
         <div class="preview-heading">
           <div>
             <span class="panel-label">{{
-              rightPanelMode === 'preview' ? 'LIVE PREVIEW' : 'SOURCE & VERSIONS'
+              rightPanelLabel
             }}</span>
             <h2>
-              {{ rightPanelMode === 'preview' ? '应用预览' : '代码与版本' }}
+              {{ rightPanelTitle }}
               <a-tag
                 v-if="rightPanelMode === 'preview' && historicalPreviewVersionNo"
                 color="purple"
@@ -215,12 +274,22 @@
               <button
                 type="button"
                 :class="{ active: rightPanelMode === 'code' }"
-                :disabled="(appInfo.versionNo || 0) <= 0"
+                :disabled="!generating && (appInfo.versionNo || 0) <= 0"
                 @click="rightPanelMode = 'code'"
               >
                 <CodeOutlined /> 代码
               </button>
             </div>
+            <a-tooltip v-if="rightPanelMode === 'preview'" title="可视化选择页面元素">
+              <a-button
+                :type="visualEditEnabled ? 'primary' : 'text'"
+                shape="circle"
+                :disabled="generating || !previewReady || !previewUrl || !previewFrameLoaded"
+                @click="toggleVisualEditMode"
+              >
+                <EditOutlined />
+              </a-button>
+            </a-tooltip>
             <a-tooltip v-if="rightPanelMode === 'preview'" title="刷新">
               <a-button
                 type="text"
@@ -257,6 +326,8 @@
           v-if="rightPanelMode === 'code'"
           :app-id="appId"
           :current-version-no="appInfo.versionNo || 0"
+          :generation-active="generating"
+          :generated-files="generatedFiles"
           @version-change="handleVersionChange"
           @preview-version="handleVersionPreview"
         />
@@ -275,11 +346,22 @@
             <MoreOutlined />
           </div>
 
-          <div v-if="previewReady && previewUrl" ref="previewViewportRef" class="preview-viewport">
+          <div
+            v-if="previewReady && previewUrl"
+            ref="previewViewportRef"
+            class="preview-viewport"
+            :class="{ 'visual-editing': visualEditEnabled }"
+          >
             <div class="preview-frame" :style="previewFrameStyle">
-              <iframe :key="previewKey" :src="previewUrl" title="应用预览"></iframe>
+              <iframe
+                :key="previewKey"
+                ref="previewIframeRef"
+                :src="previewUrl"
+                :style="previewIframeStyle"
+                title="应用预览"
+                @load="handlePreviewFrameLoad"
+              ></iframe>
             </div>
-            <span class="preview-scale">{{ Math.round(previewScale * 100) }}%</span>
           </div>
           <div v-else class="preview-empty">
             <div class="preview-visual" :class="{ generating: generating || previewBuilding }">
@@ -344,23 +426,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
   ArrowUpOutlined,
   CheckCircleFilled,
+  CloseOutlined,
   CloudUploadOutlined,
   CodeOutlined,
   DeleteOutlined,
   DesktopOutlined,
   DownloadOutlined,
+  EditOutlined,
   ExclamationCircleOutlined,
   ExportOutlined,
   LayoutOutlined,
   LockOutlined,
   MoreOutlined,
+  PaperClipOutlined,
   ReloadOutlined,
   RobotOutlined,
   RollbackOutlined,
@@ -378,6 +463,11 @@ import ChatMessageContent from '@/components/ChatMessageContent.vue'
 import VersionCodeWorkspace from '@/components/VersionCodeWorkspace.vue'
 import { useLoginUserStore } from '@/stores/loginUser'
 import request from '@/request'
+import {
+  enableVisualEdit,
+  listenVisualEditSelection,
+  type VisualEditElementInfo,
+} from '@/utils/visualEdit'
 import logo from '@/assets/logo.jpg'
 import defaultAvatar from '@/assets/default-avatar.png'
 
@@ -394,6 +484,23 @@ type StreamChunk = {
   thinking: string
 }
 
+type UploadedAttachment = {
+  id: string
+  name: string
+  url?: string
+  contentType?: string
+  size?: number
+  textContent?: string
+}
+
+type GeneratedFilePanel = {
+  path: string
+  language: string
+  content: string
+  action: 'write' | 'modify' | 'stream'
+  actionLabel: string
+}
+
 const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
@@ -402,6 +509,10 @@ const appInfo = ref<API.AppVO>({})
 const messages = ref<ChatMessage[]>([])
 const inputMessage = ref('')
 const generating = ref(false)
+const attachments = ref<UploadedAttachment[]>([])
+const uploadingAttachment = ref(false)
+const attachmentInputRef = ref<HTMLInputElement>()
+const generatedFiles = ref<GeneratedFilePanel[]>([])
 const previewBuilding = ref(false)
 const deploying = ref(false)
 const undeploying = ref(false)
@@ -418,9 +529,13 @@ const activeAiMessageKey = ref('')
 const rightPanelMode = ref<'preview' | 'code'>('preview')
 const messageListRef = ref<HTMLElement>()
 const previewViewportRef = ref<HTMLElement>()
+const previewIframeRef = ref<HTMLIFrameElement>()
 const historyLoading = ref(false)
 const clearingHistory = ref(false)
 const exportingHistory = ref(false)
+const visualEditEnabled = ref(false)
+const selectedVisualElement = ref<VisualEditElementInfo>()
+const previewFrameLoaded = ref(false)
 const autoScrollToBottom = ref(true)
 const hasMoreHistory = ref(false)
 const lastCreateTime = ref<string>()
@@ -438,6 +553,10 @@ const PREVIEW_DESKTOP_WIDTH = 1440
 const PREVIEW_MIN_HEIGHT = 900
 const MESSAGE_BOTTOM_THRESHOLD = 80
 let previewResizeObserver: ResizeObserver | undefined
+let cleanupVisualEdit: (() => void) | undefined
+let cleanupVisualEditSelection: (() => void) | undefined
+let generationCodeCaptureBuffer = ''
+const GENERATED_CODE_CAPTURE_LIMIT = 300_000
 
 const suggestions = ['增加一个现代化首页', '优化页面配色和间距', '添加联系我们表单']
 const codeGenerationFormatInstruction = [
@@ -466,18 +585,51 @@ const downloadButtonText = computed(() => {
   const downloadCount = appInfo.value.downloadCount || 0
   return downloadCount > 0 ? `下载代码 ${downloadCount} 次` : '下载代码'
 })
+const rightPanelLabel = computed(() => {
+  if (rightPanelMode.value === 'code') {
+    return 'SOURCE & VERSIONS'
+  }
+  return 'LIVE PREVIEW'
+})
+const rightPanelTitle = computed(() => {
+  if (rightPanelMode.value === 'code') {
+    return '代码与版本'
+  }
+  return '应用预览'
+})
+const normalizePreviewUrl = (url: string) => {
+  if (!url) {
+    return ''
+  }
+
+  try {
+    const parsedUrl = new URL(url, window.location.origin)
+    if (
+      parsedUrl.hostname === window.location.hostname &&
+      parsedUrl.port === '8123' &&
+      parsedUrl.pathname.startsWith('/api/')
+    ) {
+      return `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`
+    }
+  } catch (error) {
+    console.warn('预览地址解析失败：', error)
+  }
+
+  return url
+}
+
 const previewUrl = computed(() => {
   if (historicalPreviewUrl.value) {
-    return historicalPreviewUrl.value
+    return normalizePreviewUrl(historicalPreviewUrl.value)
   }
   if (deployUrl.value) {
-    return deployUrl.value
+    return normalizePreviewUrl(deployUrl.value)
   }
   if (generatedPreviewUrl.value) {
-    return generatedPreviewUrl.value
+    return normalizePreviewUrl(generatedPreviewUrl.value)
   }
   if (appInfo.value.deployKey) {
-    return `http://localhost:8123/api/static/${appInfo.value.deployKey}/`
+    return `/api/static/${appInfo.value.deployKey}/`
   }
   return ''
 })
@@ -496,10 +648,35 @@ const previewAddressText = computed(() => {
 const previewScale = ref(1)
 const previewFrameHeight = ref(PREVIEW_MIN_HEIGHT)
 const previewFrameStyle = computed(() => ({
+  width: `${PREVIEW_DESKTOP_WIDTH * previewScale.value}px`,
+  height: `${previewFrameHeight.value * previewScale.value}px`,
+}))
+const previewIframeStyle = computed(() => ({
   width: `${PREVIEW_DESKTOP_WIDTH}px`,
   height: `${previewFrameHeight.value}px`,
-  transform: `translateX(-50%) scale(${previewScale.value})`,
+  transform: `scale(${previewScale.value})`,
 }))
+const selectedVisualElementLabel = computed(() => {
+  const element = selectedVisualElement.value
+  if (!element) {
+    return ''
+  }
+
+  const idText = element.id ? `#${element.id}` : ''
+  const classText = element.className
+    ? `.${element.className.split(/\s+/).filter(Boolean).join('.')}`
+    : ''
+  return `${element.tagName.toLowerCase()}${idText}${classText}`
+})
+const selectedVisualElementText = computed(() => {
+  const text = selectedVisualElement.value?.textContent || selectedVisualElement.value?.text || ''
+  return text.length > 80 ? `${text.substring(0, 80)}...` : text
+})
+const composerPlaceholder = computed(() =>
+  selectedVisualElement.value
+    ? `正在编辑 ${selectedVisualElement.value.tagName.toLowerCase()} 元素，描述您想要的修改...`
+    : '继续描述要新增或修改的内容...',
+)
 
 const updatePreviewScale = () => {
   const viewport = previewViewportRef.value
@@ -509,10 +686,7 @@ const updatePreviewScale = () => {
 
   const scale = Math.min(1, viewport.clientWidth / PREVIEW_DESKTOP_WIDTH)
   previewScale.value = Math.max(scale, 0.1)
-  previewFrameHeight.value = Math.max(
-    PREVIEW_MIN_HEIGHT,
-    viewport.clientHeight / previewScale.value,
-  )
+  previewFrameHeight.value = Math.max(1, viewport.clientHeight / previewScale.value)
 }
 
 const observePreviewViewport = async () => {
@@ -524,6 +698,81 @@ const observePreviewViewport = async () => {
   updatePreviewScale()
   previewResizeObserver = new ResizeObserver(updatePreviewScale)
   previewResizeObserver.observe(previewViewportRef.value)
+}
+
+const clearPreviewVisualEdit = () => {
+  cleanupVisualEdit?.()
+  cleanupVisualEdit = undefined
+}
+
+const applyPreviewVisualEdit = async () => {
+  await nextTick()
+  clearPreviewVisualEdit()
+  if (
+    !visualEditEnabled.value ||
+    rightPanelMode.value !== 'preview' ||
+    !previewReady.value ||
+    !previewIframeRef.value
+  ) {
+    return false
+  }
+
+  try {
+    cleanupVisualEdit = enableVisualEdit(previewIframeRef.value)
+    return true
+  } catch (error) {
+    console.warn('启用可视化编辑失败：', error)
+    visualEditEnabled.value = false
+    message.warning(error instanceof Error ? error.message : '预览页面尚未准备好，请稍后再进入编辑模式')
+    return false
+  }
+}
+
+const clearSelectedVisualElement = () => {
+  selectedVisualElement.value = undefined
+}
+
+const disableVisualEditMode = () => {
+  visualEditEnabled.value = false
+  clearPreviewVisualEdit()
+}
+
+const clearVisualEditMode = () => {
+  disableVisualEditMode()
+  clearSelectedVisualElement()
+}
+
+const toggleVisualEditMode = async () => {
+  if (visualEditEnabled.value) {
+    clearVisualEditMode()
+    message.info('已退出可视化编辑模式')
+    return
+  }
+  if (
+    !previewReady.value ||
+    !previewUrl.value ||
+    !previewFrameLoaded.value ||
+    rightPanelMode.value !== 'preview'
+  ) {
+    message.warning('请先打开可预览的应用页面')
+    return
+  }
+
+  visualEditEnabled.value = true
+  const enabled = await applyPreviewVisualEdit()
+  if (enabled) {
+    message.success('已进入可视化编辑模式，请在预览页面点击要修改的元素')
+  }
+}
+
+const handlePreviewFrameLoad = () => {
+  previewFrameLoaded.value = true
+  observePreviewViewport()
+  window.setTimeout(updatePreviewScale, 100)
+  window.setTimeout(updatePreviewScale, 500)
+  if (visualEditEnabled.value) {
+    applyPreviewVisualEdit()
+  }
 }
 
 const isMessageListNearBottom = () => {
@@ -938,6 +1187,7 @@ const finishGeneration = async (aiMessage: ChatMessage, errorText = '') => {
   if (streamSucceeded && !errorText) {
     generationError.value = ''
     await buildPreview()
+    rightPanelMode.value = 'preview'
     return
   }
 
@@ -956,11 +1206,247 @@ const restoreFailedMessage = () => {
   inputMessage.value = lastSentMessage
 }
 
-const buildGenerationRequestMessage = (content: string) => {
-  if (appInfo.value.codeGenType !== 'vue_project') {
-    return content.trim()
+const triggerAttachmentInput = () => {
+  attachmentInputRef.value?.click()
+}
+
+const removeAttachment = (id: string) => {
+  attachments.value = attachments.value.filter((attachment) => attachment.id !== id)
+}
+
+const handleAttachmentChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length) {
+    return
   }
-  return `${content.trim()}${codeGenerationFormatInstruction}`
+
+  uploadingAttachment.value = true
+  try {
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await request.post<{
+        code: number
+        data?: UploadedAttachment
+        message?: string
+      }>(`/app/assets/upload?appId=${encodeURIComponent(appId)}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      if (res.data.code !== 0 || !res.data.data) {
+        message.error(res.data.message || `${file.name} 上传失败`)
+        continue
+      }
+      attachments.value.push({
+        ...res.data.data,
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      })
+    }
+  } finally {
+    uploadingAttachment.value = false
+  }
+}
+
+const buildAttachmentPrompt = () => {
+  if (!attachments.value.length) {
+    return ''
+  }
+  const lines = ['上传附件信息：']
+  attachments.value.forEach((attachment, index) => {
+    lines.push(`${index + 1}. 文件名：${attachment.name}`)
+    if (attachment.contentType) {
+      lines.push(`   类型：${attachment.contentType}`)
+    }
+    if (attachment.url) {
+      lines.push(`   图片 URL：${attachment.url}`)
+      lines.push('   请将该图片作为页面素材使用；如果需要识别图片中文字，请以用户描述为准。')
+    }
+    if (attachment.textContent) {
+      const text = attachment.textContent.length > 8000
+        ? `${attachment.textContent.slice(0, 8000)}\n<!-- 附件内容过长，后续已省略 -->`
+        : attachment.textContent
+      lines.push(`   文本内容：\n<uploaded_file name="${attachment.name}">\n${text}\n</uploaded_file>`)
+    }
+  })
+  return `\n\n${lines.join('\n')}`
+}
+
+const appendAttachmentPrompt = (content: string) => {
+  return `${content.trim() || '请根据上传附件生成或修改应用'}${buildAttachmentPrompt()}`
+}
+
+const resetGeneratedCodePanel = () => {
+  generationCodeCaptureBuffer = ''
+  generatedFiles.value = []
+}
+
+const getDefaultGeneratedFilePath = (language = '', index = 0) => {
+  const codeGenType = appInfo.value.codeGenType
+  const normalizedLanguage = language.toLowerCase()
+  if (codeGenType === 'html') {
+    return 'index.html'
+  }
+  if (codeGenType === 'multi_file') {
+    if (normalizedLanguage === 'html') return 'index.html'
+    if (normalizedLanguage === 'css') return 'style.css'
+    if (['js', 'javascript'].includes(normalizedLanguage)) return 'script.js'
+  }
+  if (normalizedLanguage === 'vue') return `generated-${index + 1}.vue`
+  if (normalizedLanguage === 'html') return `generated-${index + 1}.html`
+  if (normalizedLanguage === 'css') return `generated-${index + 1}.css`
+  if (['js', 'javascript'].includes(normalizedLanguage)) return `generated-${index + 1}.js`
+  if (normalizedLanguage === 'ts') return `generated-${index + 1}.ts`
+  return `generated-${index + 1}.txt`
+}
+
+const inferFilePathBeforeFence = (prefix: string, language: string, index: number) => {
+  const tail = prefix.slice(-300)
+  const fileNameMatch = tail.match(/([A-Za-z0-9_./@-]+\.(?:vue|html|css|js|ts|tsx|jsx|json|md|txt))\s*$/)
+  if (fileNameMatch?.[1]) {
+    return fileNameMatch[1].replace(/^[-*#\s]+/, '')
+  }
+  return getDefaultGeneratedFilePath(language, index)
+}
+
+const inferLanguage = (filePath: string, fallback = '') => {
+  if (fallback) {
+    return fallback
+  }
+  const suffix = filePath.split('.').pop()?.toLowerCase()
+  if (suffix === 'vue') return 'vue'
+  if (suffix === 'js') return 'javascript'
+  if (suffix === 'ts') return 'typescript'
+  if (suffix === 'css') return 'css'
+  if (suffix === 'html') return 'html'
+  if (suffix === 'json') return 'json'
+  return 'text'
+}
+
+const extractFencedCode = (text: string) => {
+  const complete = text.match(/```([a-zA-Z0-9_-]*)\s*\n([\s\S]*?)```/)
+  if (complete) {
+    return {
+      language: complete[1] || '',
+      content: complete[2],
+    }
+  }
+  const partial = text.match(/```([a-zA-Z0-9_-]*)\s*\n([\s\S]*)/)
+  if (partial) {
+    return {
+      language: partial[1] || '',
+      content: partial[2],
+    }
+  }
+  return undefined
+}
+
+const upsertGeneratedFile = (file: GeneratedFilePanel) => {
+  const index = generatedFiles.value.findIndex((item) => item.path === file.path)
+  if (index >= 0) {
+    generatedFiles.value[index] = file
+  } else {
+    generatedFiles.value.push(file)
+  }
+}
+
+const syncFencedCodeBlocksFromBuffer = () => {
+  const fencePattern = /```([a-zA-Z0-9_-]*)[^\S\r\n]*\r?\n/g
+  let match: RegExpExecArray | null
+  let index = 0
+  while ((match = fencePattern.exec(generationCodeCaptureBuffer))) {
+    const language = match[1] || ''
+    const contentStart = fencePattern.lastIndex
+    const contentEnd = generationCodeCaptureBuffer.indexOf('```', contentStart)
+    const isClosed = contentEnd >= 0
+    const content = isClosed
+      ? generationCodeCaptureBuffer.slice(contentStart, contentEnd)
+      : generationCodeCaptureBuffer.slice(contentStart)
+
+    if (content.trim()) {
+      const prefix = generationCodeCaptureBuffer.slice(0, match.index)
+      const path = inferFilePathBeforeFence(prefix, language, index)
+      upsertGeneratedFile({
+        path,
+        language: inferLanguage(path, language),
+        content,
+        action: 'stream',
+        actionLabel: isClosed ? '流式代码' : '生成中',
+      })
+    }
+
+    if (!isClosed) {
+      break
+    }
+    fencePattern.lastIndex = contentEnd + 3
+    index += 1
+  }
+}
+
+const captureGeneratedCodeFromChunk = (content: string) => {
+  if (!content) {
+    return
+  }
+  generationCodeCaptureBuffer += content
+  if (generationCodeCaptureBuffer.length > GENERATED_CODE_CAPTURE_LIMIT) {
+    generationCodeCaptureBuffer = generationCodeCaptureBuffer.slice(-240_000)
+  }
+
+  if (appInfo.value.codeGenType !== 'vue_project') {
+    syncFencedCodeBlocksFromBuffer()
+    return
+  }
+
+  const toolBlockPattern = /\[工具调用\]\s*(写入文件|修改文件)\s+([^\n\r]+)([\s\S]*?)(?=\n\[工具调用\]|\n\[系统\]|$)/g
+  let match: RegExpExecArray | null
+  while ((match = toolBlockPattern.exec(generationCodeCaptureBuffer))) {
+    const actionText = match[1]
+    const filePath = match[2].trim()
+    const body = match[3] || ''
+    const codeSource = actionText === '修改文件'
+      ? body.split('替换后：').pop() || body
+      : body
+    const fencedCode = extractFencedCode(codeSource)
+    if (!filePath || !fencedCode || !fencedCode.content.trim()) {
+      continue
+    }
+    upsertGeneratedFile({
+      path: filePath,
+      language: inferLanguage(filePath, fencedCode.language),
+      content: fencedCode.content,
+      action: actionText === '修改文件' ? 'modify' : 'write',
+      actionLabel: actionText,
+    })
+  }
+}
+
+const buildGenerationRequestMessage = (content: string) => {
+  return content.trim()
+}
+
+const appendVisualElementPrompt = (content: string, element?: VisualEditElementInfo) => {
+  if (!element) {
+    return content
+  }
+
+  let elementContext = '\n\n选中元素信息：'
+  if (element.pagePath) {
+    elementContext += `\n- 页面路径: ${element.pagePath}`
+  }
+  elementContext += `\n- 标签: ${element.tagName.toLowerCase()}\n- 选择器: ${element.selector}`
+  const textContent = element.textContent || element.text
+  if (textContent) {
+    elementContext += `\n- 当前内容: ${textContent.substring(0, 100)}`
+  }
+  elementContext += [
+    '',
+    '修改范围约束：',
+    `- 用户本次输入“${content.trim()}”只作用于上述选择器对应的元素。`,
+    '- 如果用户输入是“改成 XXX / 替换为 XXX / 改为 XXX”，请将该元素的文本内容替换为 XXX。',
+    '- 不要把该需求扩展为全站主题替换，不要修改其他标题、段落、卡片或导航内容，除非用户明确要求。',
+  ].join('\n')
+
+  return `${content.trim()}${elementContext}`
 }
 
 const stripGenerationFormatInstruction = (content: string) => {
@@ -1006,6 +1492,7 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
       scrollToBottom()
     }
     if (chunk.content) {
+      captureGeneratedCodeFromChunk(chunk.content)
       if (immediate) {
         aiMessage.content += chunk.content
         scrollToBottom()
@@ -1052,21 +1539,30 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
 
 const sendMessage = () => {
   const content = inputMessage.value.trim()
-  if (!content || generating.value) {
+  if ((!content && !attachments.value.length) || generating.value || uploadingAttachment.value) {
     return
   }
+  const selectedElement = selectedVisualElement.value
+  const contentWithAttachments = appendAttachmentPrompt(content)
+  const requestContent = appendVisualElementPrompt(contentWithAttachments, selectedElement)
 
   inputMessage.value = ''
+  attachments.value = []
   lastSentMessage = content
+  if (selectedElement || visualEditEnabled.value) {
+    clearVisualEditMode()
+  }
   streamSucceeded = false
   generationStoppedByUser = false
   pageLeftDuringGeneration = false
   generationError.value = ''
   resetTypewriter()
+  resetGeneratedCodePanel()
+  rightPanelMode.value = 'code'
   messages.value.push({
     key: `user-${Date.now()}`,
     type: 'user',
-    content,
+    content: requestContent,
   })
   // SSE 回调必须修改响应式对象，否则分片到达时页面不会立即重新渲染。
   const aiMessage = reactive<ChatMessage>({
@@ -1080,7 +1576,7 @@ const sendMessage = () => {
   previewReady.value = false
   scrollToBottom(true)
 
-  const requestMessage = buildGenerationRequestMessage(content)
+  const requestMessage = buildGenerationRequestMessage(requestContent)
   const url = `http://localhost:8123/api/app/chat/gen/code?appId=${appId}&message=${encodeURIComponent(requestMessage)}`
   bindGenerationEventSource(url, aiMessage)
 }
@@ -1095,6 +1591,8 @@ const reconnectGeneration = async () => {
   pageLeftDuringGeneration = false
   generationError.value = ''
   resetTypewriter()
+  resetGeneratedCodePanel()
+  rightPanelMode.value = 'code'
 
   const aiMessage = reactive<ChatMessage>({
     key: `ai-reconnect-${Date.now()}`,
@@ -1330,7 +1828,24 @@ const copyDeployUrl = async () => {
   message.success('部署链接已复制')
 }
 
+watch(rightPanelMode, (mode) => {
+  if (mode !== 'preview') {
+    disableVisualEditMode()
+  }
+})
+
+watch(previewKey, () => {
+  previewFrameLoaded.value = false
+  previewFrameHeight.value = PREVIEW_MIN_HEIGHT
+  clearPreviewVisualEdit()
+})
+
 onMounted(async () => {
+  cleanupVisualEditSelection = listenVisualEditSelection((element) => {
+    selectedVisualElement.value = element
+    message.success('已选中页面元素')
+  })
+
   if (!appId) {
     message.error('应用 ID 无效')
     await router.replace('/')
@@ -1369,6 +1884,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cleanupVisualEditSelection?.()
+  cleanupVisualEditSelection = undefined
+  clearPreviewVisualEdit()
   if (generating.value) {
     pageLeftDuringGeneration = true
   } else {
@@ -1810,6 +2328,67 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgb(91 92 240 / 7%);
 }
 
+.selected-element-alert {
+  margin-bottom: 8px;
+}
+
+.selected-element-alert :deep(.ant-alert-description) {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  color: #475467;
+  font-size: 10px;
+  border: 1px solid #dfe3ea;
+  border-radius: 999px;
+  background: #f8fafc;
+}
+
+.attachment-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip button {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  color: #98a2b3;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+}
+
+.attachment-input {
+  display: none;
+}
+
+.attachment-button {
+  height: 24px;
+  padding-inline: 4px;
+  color: #667085;
+  font-size: 9px;
+}
+
 .composer :deep(textarea) {
   padding: 2px;
   border: 0;
@@ -1993,21 +2572,22 @@ onBeforeUnmount(() => {
   background: #eef1f5;
 }
 
+.preview-viewport.visual-editing {
+  box-shadow: inset 0 0 0 2px #5b5cf0;
+}
+
 .preview-frame {
-  position: absolute;
-  top: 0;
-  left: 50%;
+  position: relative;
+  margin: 0 auto;
+  overflow: hidden;
   background: #fff;
-  transform-origin: top center;
 }
 
 .preview-frame iframe {
   display: block;
-  width: 100%;
-  height: 100%;
-  flex: 1;
   border: 0;
   background: #fff;
+  transform-origin: top left;
 }
 
 .preview-scale {

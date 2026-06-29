@@ -1,6 +1,7 @@
 package com.unique.zhangaizerocode.controller;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.paginate.Page;
@@ -17,12 +18,14 @@ import com.unique.zhangaizerocode.core.generation.GenerationStreamEvent;
 import com.unique.zhangaizerocode.exception.BusinessException;
 import com.unique.zhangaizerocode.exception.ErrorCode;
 import com.unique.zhangaizerocode.exception.ThrowUtils;
+import com.unique.zhangaizerocode.manager.CosManager;
 import com.unique.zhangaizerocode.model.dto.app.*;
 import com.unique.zhangaizerocode.model.entity.App;
 import com.unique.zhangaizerocode.model.entity.User;
 import com.unique.zhangaizerocode.model.enums.AppGenerationStatusEnum;
 import com.unique.zhangaizerocode.model.enums.AppVisibilityEnum;
 import com.unique.zhangaizerocode.model.enums.CodeGenTypeEnum;
+import com.unique.zhangaizerocode.model.vo.AppAssetVO;
 import com.unique.zhangaizerocode.model.vo.AppVO;
 import com.unique.zhangaizerocode.service.AppService;
 import com.unique.zhangaizerocode.service.AppVersionService;
@@ -41,13 +44,19 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Flux;
 import org.springframework.core.io.FileSystemResource;
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * 应用 控制层。
@@ -57,6 +66,10 @@ import java.util.Map;
 @RestController
 @RequestMapping("/app")
 public class AppController {
+
+    private static final long MAX_ASSET_SIZE = 10 * 1024 * 1024L;
+    private static final long MAX_TEXT_ASSET_SIZE = 256 * 1024L;
+    private static final Set<String> TEXT_ASSET_SUFFIXES = Set.of("txt", "md", "json", "csv", "yml", "yaml");
 
     @Resource
     private AppService appService;
@@ -69,6 +82,8 @@ public class AppController {
     private AppGenerationTaskManager appGenerationTaskManager;
     @Resource
     private ProjectDownloadService projectDownloadService;
+    @Resource
+    private CosManager cosManager;
 
 
     @PostMapping("/add")
@@ -300,6 +315,80 @@ public class AppController {
      * @param request 请求对象
      * @return 生成结果流
      */
+    @PostMapping(value = "/assets/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public BaseResponse<AppAssetVO> uploadAppAsset(@RequestParam Long appId,
+                                                   @RequestPart("file") MultipartFile file,
+                                                   HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
+        ThrowUtils.throwIf(file == null || file.isEmpty(), ErrorCode.PARAMS_ERROR, "文件不能为空");
+        ThrowUtils.throwIf(file.getSize() > MAX_ASSET_SIZE, ErrorCode.PARAMS_ERROR, "文件不能超过 10MB");
+
+        User loginUser = userService.getLoginUser(request);
+        App app = appService.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        if (!app.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole())) {
+            throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限上传该应用附件");
+        }
+
+        String originalFilename = StrUtil.blankToDefault(file.getOriginalFilename(), "upload");
+        String suffix = StrUtil.blankToDefault(FileUtil.getSuffix(originalFilename), "").toLowerCase();
+        String contentType = StrUtil.blankToDefault(file.getContentType(), "application/octet-stream");
+
+        AppAssetVO assetVO = new AppAssetVO();
+        assetVO.setName(originalFilename);
+        assetVO.setContentType(contentType);
+        assetVO.setSize(file.getSize());
+
+        if (isTextAsset(suffix, contentType)) {
+            ThrowUtils.throwIf(file.getSize() > MAX_TEXT_ASSET_SIZE,
+                    ErrorCode.PARAMS_ERROR, "文本附件不能超过 256KB");
+            try {
+                assetVO.setTextContent(new String(file.getBytes(), StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "读取文本附件失败：" + e.getMessage());
+            }
+            return ResultUtils.success(assetVO);
+        }
+
+        ThrowUtils.throwIf(!contentType.startsWith("image/"),
+                ErrorCode.PARAMS_ERROR, "当前仅支持图片和文本附件");
+
+        File tempFile = null;
+        try {
+            tempFile = File.createTempFile("app-asset-", StrUtil.isBlank(suffix) ? ".tmp" : "." + suffix);
+            file.transferTo(tempFile);
+            String key = buildAssetCosKey(appId, originalFilename, suffix);
+            String url = cosManager.uploadFile(key, tempFile);
+            ThrowUtils.throwIf(StrUtil.isBlank(url), ErrorCode.SYSTEM_ERROR, "上传附件失败");
+            assetVO.setUrl(url);
+            return ResultUtils.success(assetVO);
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "上传附件失败：" + e.getMessage());
+        } finally {
+            if (tempFile != null) {
+                FileUtil.del(tempFile);
+            }
+        }
+    }
+
+    private boolean isTextAsset(String suffix, String contentType) {
+        return TEXT_ASSET_SUFFIXES.contains(suffix)
+                || contentType.startsWith("text/");
+    }
+
+    private String buildAssetCosKey(Long appId, String originalFilename, String suffix) {
+        String datePath = LocalDate.now().toString().replace("-", "/");
+        String safeName = originalFilename.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+        if (StrUtil.isBlank(safeName)) {
+            safeName = "asset";
+        }
+        if (StrUtil.isNotBlank(suffix) && !safeName.toLowerCase().endsWith("." + suffix)) {
+            safeName = safeName + "." + suffix;
+        }
+        return String.format("app-assets/%s/%s/%s_%s",
+                datePath, appId, UUID.randomUUID().toString().replace("-", ""), safeName);
+    }
+
     @GetMapping(
             value = "/chat/gen/code",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE

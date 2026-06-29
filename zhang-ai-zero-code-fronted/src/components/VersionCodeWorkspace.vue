@@ -6,7 +6,7 @@
           <span class="sidebar-label">EXPLORER</span>
           <strong>项目文件</strong>
         </div>
-        <span>{{ filteredFiles.length }} / {{ files.length }}</span>
+        <span>{{ filteredFiles.length }} / {{ workspaceFiles.length }}</span>
       </div>
       <a-input v-model:value="fileKeyword" size="small" allow-clear placeholder="搜索文件" />
       <div v-if="fileError" class="sidebar-error">
@@ -40,24 +40,36 @@
       <div class="code-toolbar">
         <div class="file-meta">
           <strong>{{ selectedFile || '选择文件查看源码' }}</strong>
-          <span v-if="selectedVersionNo">
+          <span v-if="selectedFileGenerated">
+            生成中 · {{ selectedGeneratedFile?.actionLabel || '更新文件' }}
+          </span>
+          <span v-else-if="selectedVersionNo">
             v{{ selectedVersionNo }}
             <template v-if="dirty"> · 有未保存修改</template>
           </span>
         </div>
         <div class="toolbar-actions">
-          <a-button size="small" :disabled="!selectedVersionNo" @click="openVersionPreview">
+          <a-button
+            v-if="showFollowLatestButton"
+            size="small"
+            type="primary"
+            ghost
+            @click="followLatestGeneratedFile"
+          >
+            查看最新
+          </a-button>
+          <a-button size="small" :disabled="generationActive || !selectedVersionNo" @click="openVersionPreview">
             <ExportOutlined />
             预览
           </a-button>
-          <a-button size="small" :disabled="!canCompare" @click="compareWithPrevious">
+          <a-button size="small" :disabled="generationActive || !canCompare" @click="compareWithPrevious">
             <DiffOutlined />
             对比
           </a-button>
           <a-popconfirm title="确定将该版本设为当前版本吗？" @confirm="rollbackSelectedVersion">
             <a-button
               size="small"
-              :disabled="!selectedVersionNo || selectedVersionNo === currentVersionNo"
+              :disabled="generationActive || !selectedVersionNo || selectedVersionNo === currentVersionNo"
             >
               <RollbackOutlined />
               回滚
@@ -67,7 +79,7 @@
             type="primary"
             size="small"
             :loading="saving"
-            :disabled="!selectedFile || !dirty"
+            :disabled="generationActive || !selectedFile || !dirty"
             @click="saveFile"
           >
             <SaveOutlined />
@@ -141,11 +153,13 @@
         </div>
         <textarea
           v-else
+          ref="codeEditorRef"
           v-model="fileContent"
           class="code-editor"
           spellcheck="false"
-          :disabled="!selectedFile"
+          :disabled="generationActive || !selectedFile"
           @input="dirty = true"
+          @scroll.passive="handleCodeEditorScroll"
         ></textarea>
       </a-spin>
     </section>
@@ -156,16 +170,25 @@
           <span class="sidebar-label">VERSIONS</span>
           <strong>版本历史</strong>
         </div>
-        <a-button type="text" size="small" :loading="loadingVersions" @click="loadVersions">
-          <ReloadOutlined />
-        </a-button>
       </div>
+      <button
+        v-if="generationActive"
+        type="button"
+        class="version-item active"
+      >
+        <span>
+          <strong>生成中</strong>
+          <a-tag color="blue">当前</a-tag>
+        </span>
+        <small>{{ generatedFiles.length ? '正在写入或修改文件' : '等待工具调用' }}</small>
+        <time>实时</time>
+      </button>
       <button
         v-for="version in versions"
         :key="version.versionNo"
         type="button"
         class="version-item"
-        :class="{ active: version.versionNo === selectedVersionNo }"
+        :class="{ active: !generationActive && version.versionNo === selectedVersionNo }"
         @click="selectVersion(version.versionNo || 0)"
       >
         <span>
@@ -180,7 +203,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   DiffOutlined,
   ExclamationCircleOutlined,
@@ -188,7 +211,6 @@ import {
   FileOutlined,
   FolderOpenOutlined,
   FolderOutlined,
-  ReloadOutlined,
   RollbackOutlined,
   SaveOutlined,
 } from '@ant-design/icons-vue'
@@ -203,9 +225,17 @@ import {
   saveVersionFile,
 } from '@/api/appVersionController'
 
+type GeneratedWorkspaceFile = {
+  path: string
+  content: string
+  actionLabel?: string
+}
+
 const props = defineProps<{
   appId: string
   currentVersionNo: number
+  generationActive?: boolean
+  generatedFiles?: GeneratedWorkspaceFile[]
 }>()
 
 const emit = defineEmits<{
@@ -230,6 +260,9 @@ const fileError = ref('')
 const expandedKeys = ref<string[]>([])
 const selectedKeys = ref<string[]>([])
 const fileSidebarWidth = ref(230)
+const followGeneratedFile = ref(true)
+const codeEditorRef = ref<HTMLTextAreaElement>()
+const autoScrollCodeEditor = ref(true)
 let stopResize: (() => void) | undefined
 
 type FileTreeNode = {
@@ -272,9 +305,40 @@ const startResize = (event: PointerEvent) => {
   }
 }
 
+const generationActive = computed(() => Boolean(props.generationActive))
+const generatedFiles = computed(() => (generationActive.value ? props.generatedFiles || [] : []))
+const generatedFileMap = computed(() => {
+  const map = new Map<string, GeneratedWorkspaceFile>()
+  generatedFiles.value.forEach((file) => {
+    if (file.path) {
+      map.set(file.path, file)
+    }
+  })
+  return map
+})
+const workspaceFiles = computed(() => {
+  return Array.from(new Set([...files.value, ...generatedFileMap.value.keys()]))
+    .sort((a, b) => a.localeCompare(b))
+})
+const selectedGeneratedFile = computed(() => generatedFileMap.value.get(selectedFile.value))
+const selectedFileGenerated = computed(() => Boolean(selectedGeneratedFile.value))
+const latestGeneratedFile = computed(() => generatedFiles.value[generatedFiles.value.length - 1])
+const showFollowLatestButton = computed(() => {
+  if (!generationActive.value || !latestGeneratedFile.value) {
+    return false
+  }
+  return (
+    !followGeneratedFile.value ||
+    !autoScrollCodeEditor.value ||
+    selectedFile.value !== latestGeneratedFile.value.path
+  )
+})
+
 const filteredFiles = computed(() => {
   const keyword = fileKeyword.value.trim().toLowerCase()
-  return keyword ? files.value.filter((file) => file.toLowerCase().includes(keyword)) : files.value
+  return keyword
+    ? workspaceFiles.value.filter((file) => file.toLowerCase().includes(keyword))
+    : workspaceFiles.value
 })
 
 const fileTree = computed<FileTreeNode[]>(() => {
@@ -442,6 +506,33 @@ const copyDiffCode = async (code: string) => {
   message.success('代码已复制')
 }
 
+const isCodeEditorNearBottom = () => {
+  const editor = codeEditorRef.value
+  if (!editor) {
+    return true
+  }
+  return editor.scrollHeight - editor.scrollTop - editor.clientHeight <= 80
+}
+
+const handleCodeEditorScroll = () => {
+  const nearBottom = isCodeEditorNearBottom()
+  autoScrollCodeEditor.value = nearBottom
+  if (generationActive.value) {
+    followGeneratedFile.value = nearBottom
+  }
+}
+
+const scrollCodeEditorToBottom = async (force = false) => {
+  await nextTick()
+  const editor = codeEditorRef.value
+  if (!editor) {
+    return
+  }
+  if (force || autoScrollCodeEditor.value || isCodeEditorNearBottom()) {
+    editor.scrollTop = editor.scrollHeight
+  }
+}
+
 const getRequestErrorText = (error: unknown) => {
   const requestError = error as {
     response?: { status?: number; data?: { message?: string } }
@@ -497,11 +588,24 @@ const selectVersion = async (versionNo: number) => {
   }
 }
 
-const selectFile = async (filePath: string) => {
+const selectFile = async (filePath: string, options: { forceScroll?: boolean } = {}) => {
   selectedFile.value = filePath
   selectedKeys.value = [filePath]
-  loadingFile.value = true
+  autoScrollCodeEditor.value = true
   diffVisible.value = false
+  const generatedFile = generatedFileMap.value.get(filePath)
+  if (generatedFile) {
+    fileContent.value = generatedFile.content
+    dirty.value = false
+    scrollCodeEditorToBottom(options.forceScroll ?? true)
+    return
+  }
+  if (!selectedVersionNo.value) {
+    fileContent.value = ''
+    dirty.value = false
+    return
+  }
+  loadingFile.value = true
   try {
     const res = await readVersionFile({
       appId: props.appId,
@@ -510,13 +614,25 @@ const selectFile = async (filePath: string) => {
     })
     fileContent.value = res.data.data?.content || ''
     dirty.value = false
+    scrollCodeEditorToBottom(options.forceScroll ?? true)
   } finally {
     loadingFile.value = false
   }
 }
 
+const followLatestGeneratedFile = async () => {
+  followGeneratedFile.value = true
+  autoScrollCodeEditor.value = true
+  if (latestGeneratedFile.value?.path) {
+    await selectFile(latestGeneratedFile.value.path, { forceScroll: true })
+    return
+  }
+  await scrollCodeEditorToBottom(true)
+}
+
 const handleTreeSelect = (keys: Array<string | number>, info: { node: FileTreeNode }) => {
   if (info.node.isLeaf && keys[0]) {
+    followGeneratedFile.value = false
     selectFile(String(keys[0]))
     return
   }
@@ -595,6 +711,44 @@ watch(
 watch(fileKeyword, (keyword) => {
   if (keyword.trim()) expandedKeys.value = getDirectoryKeys(fileTree.value)
 })
+
+watch(
+  () => props.generationActive,
+  (active) => {
+    if (active) {
+      followGeneratedFile.value = true
+      autoScrollCodeEditor.value = true
+    }
+  },
+)
+
+watch(
+  generatedFiles,
+  async (files) => {
+    const latestFile = files[files.length - 1]
+    if (generationActive.value && latestFile?.path && !selectedFile.value) {
+      await selectFile(latestFile.path, { forceScroll: true })
+      return
+    }
+    if (
+      generationActive.value &&
+      latestFile?.path &&
+      followGeneratedFile.value &&
+      autoScrollCodeEditor.value &&
+      selectedFile.value !== latestFile.path
+    ) {
+      await selectFile(latestFile.path, { forceScroll: true })
+      return
+    }
+    const generatedFile = selectedGeneratedFile.value
+    if (generatedFile) {
+      fileContent.value = generatedFile.content
+      dirty.value = false
+      scrollCodeEditorToBottom()
+    }
+  },
+  { deep: true },
+)
 
 onMounted(loadVersions)
 onBeforeUnmount(() => stopResize?.())
