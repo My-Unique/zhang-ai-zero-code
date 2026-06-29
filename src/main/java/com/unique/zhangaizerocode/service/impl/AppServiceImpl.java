@@ -313,7 +313,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 mutationToolExecutionCount
         );
         Flux<String> handledStream = streamHandlerExecutor
-                .doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
+                .doExecute(codeStream, chatHistoryService, appId, newVersionNo, loginUser, codeGenTypeEnum);
 
         /*
          * 版本保存不能只放在 doOnComplete 里。

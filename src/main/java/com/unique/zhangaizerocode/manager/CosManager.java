@@ -49,9 +49,24 @@ public class CosManager {
             log.error("文件上传 COS 失败，返回结果为空");
             return null;
         }
-        String url = String.format("%s%s", cosClientConfig.getHost(), key);
+        String url = buildFileUrl(key);
         log.info("文件上传 COS 成功: {} -> {}", file.getName(), url);
         return url;
+    }
+
+    /**
+     * 拼接公开访问地址，兼容 host 是否以 / 结尾、key 是否以 / 开头两种配置。
+     */
+    private String buildFileUrl(String key) {
+        String host = StrUtil.blankToDefault(cosClientConfig.getHost(), "");
+        String normalizedKey = StrUtil.blankToDefault(key, "");
+        if (host.endsWith("/") && normalizedKey.startsWith("/")) {
+            return host + normalizedKey.substring(1);
+        }
+        if (!host.endsWith("/") && !normalizedKey.startsWith("/")) {
+            return host + "/" + normalizedKey;
+        }
+        return host + normalizedKey;
     }
 
     /**

@@ -85,16 +85,27 @@
             {{ formatTime(record.createTime) }}
           </template>
           <template v-else-if="column.key === 'action'">
+            <a-tooltip title="编辑资料">
+              <a-button type="text" @click="openEditModal(record)">
+                <EditOutlined />
+              </a-button>
+            </a-tooltip>
             <a-popconfirm title="确定删除该用户吗？" @confirm="doDelete(record.id)">
               <a-button type="text" danger>
                 <DeleteOutlined />
-                删除
               </a-button>
             </a-popconfirm>
           </template>
         </template>
       </a-table>
     </section>
+
+    <UserProfileEditModal
+      v-model:open="editModalOpen"
+      title="编辑用户资料"
+      :user="editingUser"
+      @saved="fetchData"
+    />
   </main>
 </template>
 
@@ -102,6 +113,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   DeleteOutlined,
+  EditOutlined,
   FilterOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -109,6 +121,7 @@ import {
 import { message } from 'ant-design-vue'
 import { deleteUser, listUserVoByPage } from '@/api/userController'
 import defaultAvatar from '@/assets/default-avatar.png'
+import UserProfileEditModal from '@/components/UserProfileEditModal.vue'
 
 const columns = [
   { title: '用户', dataIndex: 'userAvatar', width: 240 },
@@ -116,12 +129,14 @@ const columns = [
   { title: '个人简介', dataIndex: 'userProfile', ellipsis: true },
   { title: '用户角色', dataIndex: 'userRole', width: 130 },
   { title: '注册时间', dataIndex: 'createTime', width: 190 },
-  { title: '操作', key: 'action', width: 110, fixed: 'right' },
+  { title: '操作', key: 'action', width: 120, fixed: 'right' },
 ]
 
 const data = ref<API.UserVO[]>([])
 const total = ref(0)
 const loading = ref(false)
+const editModalOpen = ref(false)
+const editingUser = ref<API.UserVO>()
 const searchParams = reactive<API.UserQueryRequest>({
   pageNum: 1,
   pageSize: 10,
@@ -154,7 +169,12 @@ const fetchData = async () => {
   }
 }
 
-const doDelete = async (id?: number) => {
+const openEditModal = (record: API.UserVO) => {
+  editingUser.value = record
+  editModalOpen.value = true
+}
+
+const doDelete = async (id?: string) => {
   if (!id) {
     return
   }

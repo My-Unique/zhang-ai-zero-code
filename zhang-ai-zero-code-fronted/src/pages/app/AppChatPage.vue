@@ -144,11 +144,56 @@
                   <p>{{ item.thinking }}</p>
                 </details>
                 <ChatMessageContent v-if="item.content" :content="item.content" />
-                <span v-else-if="generating && item.key === activeAiMessageKey" class="typing-dots">
+                <div v-if="item.type === 'user' && item.visualElement" class="sent-selected-element">
+                  <div class="sent-selected-title">已选择页面元素</div>
+                  <div>
+                    <strong>元素：</strong>
+                    {{ formatVisualElementLabel(item.visualElement) }}
+                  </div>
+                  <div v-if="getVisualElementText(item.visualElement)">
+                    <strong>内容：</strong>
+                    {{ getVisualElementText(item.visualElement) }}
+                  </div>
+                  <div v-if="item.visualElement.pagePath">
+                    <strong>页面：</strong>
+                    {{ item.visualElement.pagePath }}
+                  </div>
+                  <div>
+                    <strong>选择器：</strong>
+                    {{ item.visualElement.selector }}
+                  </div>
+                </div>
+                <span v-if="generating && item.key === activeAiMessageKey && !item.content" class="typing-dots">
                   <i></i>
                   <i></i>
                   <i></i>
                 </span>
+              </div>
+              <div class="message-actions">
+                <a-tooltip title="复制">
+                  <a-button
+                    type="text"
+                    size="small"
+                    shape="circle"
+                    :disabled="!getCopyMessageContent(item)"
+                    aria-label="复制"
+                    @click="copyMessage(item)"
+                  >
+                    <CopyOutlined />
+                  </a-button>
+                </a-tooltip>
+                <a-tooltip v-if="item.type === 'user'" title="编辑">
+                  <a-button
+                    type="text"
+                    size="small"
+                    shape="circle"
+                    :disabled="!getEditableUserMessageContent(item)"
+                    aria-label="编辑"
+                    @click="editUserMessage(item)"
+                  >
+                    <EditOutlined />
+                  </a-button>
+                </a-tooltip>
               </div>
               <span class="message-time">{{ formatTime(item.createTime) }}</span>
             </div>
@@ -328,6 +373,7 @@
           :current-version-no="appInfo.versionNo || 0"
           :generation-active="generating"
           :generated-files="generatedFiles"
+          :generated-file-paths="generatedFilePaths"
           @version-change="handleVersionChange"
           @preview-version="handleVersionPreview"
         />
@@ -361,6 +407,25 @@
                 title="应用预览"
                 @load="handlePreviewFrameLoad"
               ></iframe>
+            </div>
+            <div
+              v-if="visualEditEnabled"
+              class="visual-edit-layer"
+              @mousemove="handleVisualEditPointerMove"
+              @mouseleave="handleVisualEditPointerLeave"
+              @click.prevent="handleVisualEditPointerClick"
+              @wheel.prevent="handleVisualEditWheel"
+            >
+              <span
+                v-if="visualEditHoverRect"
+                class="visual-edit-box hover"
+                :style="visualEditRectStyle(visualEditHoverRect)"
+              ></span>
+              <span
+                v-if="visualEditSelectedRect"
+                class="visual-edit-box selected"
+                :style="visualEditRectStyle(visualEditSelectedRect)"
+              ></span>
             </div>
           </div>
           <div v-else class="preview-empty">
@@ -436,6 +501,7 @@ import {
   CloseOutlined,
   CloudUploadOutlined,
   CodeOutlined,
+  CopyOutlined,
   DeleteOutlined,
   DesktopOutlined,
   DownloadOutlined,
@@ -465,8 +531,10 @@ import { useLoginUserStore } from '@/stores/loginUser'
 import request from '@/request'
 import {
   enableVisualEdit,
+  getVisualEditTargetFromPoint,
   listenVisualEditSelection,
   type VisualEditElementInfo,
+  type VisualEditOverlayRect,
 } from '@/utils/visualEdit'
 import logo from '@/assets/logo.jpg'
 import defaultAvatar from '@/assets/default-avatar.png'
@@ -475,6 +543,8 @@ type ChatMessage = {
   key: string
   type: 'user' | 'ai'
   content: string
+  rawContent?: string
+  visualElement?: VisualEditElementInfo
   thinking?: string
   createTime?: string
 }
@@ -482,6 +552,7 @@ type ChatMessage = {
 type StreamChunk = {
   content: string
   thinking: string
+  generatedFile?: GeneratedFileSnapshot
 }
 
 type UploadedAttachment = {
@@ -501,6 +572,18 @@ type GeneratedFilePanel = {
   actionLabel: string
 }
 
+type GeneratedFileSnapshot = {
+  type: 'generated_file_snapshot'
+  toolName?: string
+  action?: 'write' | 'modify' | 'delete'
+  actionLabel?: string
+  path?: string
+  language?: string
+  content?: string
+  files?: string[]
+  deleted?: boolean
+}
+
 const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
@@ -513,6 +596,7 @@ const attachments = ref<UploadedAttachment[]>([])
 const uploadingAttachment = ref(false)
 const attachmentInputRef = ref<HTMLInputElement>()
 const generatedFiles = ref<GeneratedFilePanel[]>([])
+const generatedFilePaths = ref<string[]>([])
 const previewBuilding = ref(false)
 const deploying = ref(false)
 const undeploying = ref(false)
@@ -535,6 +619,8 @@ const clearingHistory = ref(false)
 const exportingHistory = ref(false)
 const visualEditEnabled = ref(false)
 const selectedVisualElement = ref<VisualEditElementInfo>()
+const visualEditHoverRect = ref<VisualEditOverlayRect>()
+const visualEditSelectedRect = ref<VisualEditOverlayRect>()
 const previewFrameLoaded = ref(false)
 const autoScrollToBottom = ref(true)
 const hasMoreHistory = ref(false)
@@ -656,8 +742,13 @@ const previewIframeStyle = computed(() => ({
   height: `${previewFrameHeight.value}px`,
   transform: `scale(${previewScale.value})`,
 }))
-const selectedVisualElementLabel = computed(() => {
-  const element = selectedVisualElement.value
+const visualEditRectStyle = (rect: VisualEditOverlayRect) => ({
+  top: `${rect.top}px`,
+  left: `${rect.left}px`,
+  width: `${rect.width}px`,
+  height: `${rect.height}px`,
+})
+const formatVisualElementLabel = (element?: VisualEditElementInfo) => {
   if (!element) {
     return ''
   }
@@ -667,10 +758,22 @@ const selectedVisualElementLabel = computed(() => {
     ? `.${element.className.split(/\s+/).filter(Boolean).join('.')}`
     : ''
   return `${element.tagName.toLowerCase()}${idText}${classText}`
+}
+const getVisualElementText = (element?: VisualEditElementInfo) => {
+  const text = element?.textContent || element?.text || ''
+  return text.length > 80 ? `${text.substring(0, 80)}...` : text
+}
+const cloneVisualElement = (element?: VisualEditElementInfo) => {
+  if (!element) {
+    return undefined
+  }
+  return { ...element }
+}
+const selectedVisualElementLabel = computed(() => {
+  return formatVisualElementLabel(selectedVisualElement.value)
 })
 const selectedVisualElementText = computed(() => {
-  const text = selectedVisualElement.value?.textContent || selectedVisualElement.value?.text || ''
-  return text.length > 80 ? `${text.substring(0, 80)}...` : text
+  return getVisualElementText(selectedVisualElement.value)
 })
 const composerPlaceholder = computed(() =>
   selectedVisualElement.value
@@ -703,6 +806,60 @@ const observePreviewViewport = async () => {
 const clearPreviewVisualEdit = () => {
   cleanupVisualEdit?.()
   cleanupVisualEdit = undefined
+  visualEditHoverRect.value = undefined
+  visualEditSelectedRect.value = undefined
+}
+
+const resolveVisualEditTarget = (event: MouseEvent) => {
+  const iframe = previewIframeRef.value
+  const viewport = previewViewportRef.value
+  if (!iframe || !viewport) {
+    return undefined
+  }
+  try {
+    return getVisualEditTargetFromPoint(iframe, viewport, event.clientX, event.clientY)
+  } catch (error) {
+    console.warn('可视化编辑命中检测失败：', error)
+    return undefined
+  }
+}
+
+const handleVisualEditPointerMove = (event: MouseEvent) => {
+  if (!visualEditEnabled.value) {
+    return
+  }
+  const target = resolveVisualEditTarget(event)
+  visualEditHoverRect.value = target?.overlayRect
+}
+
+const handleVisualEditPointerLeave = () => {
+  visualEditHoverRect.value = undefined
+}
+
+const handleVisualEditPointerClick = (event: MouseEvent) => {
+  if (!visualEditEnabled.value) {
+    return
+  }
+  const target = resolveVisualEditTarget(event)
+  if (!target) {
+    return
+  }
+  selectedVisualElement.value = target.info
+  visualEditSelectedRect.value = target.overlayRect
+  visualEditHoverRect.value = target.overlayRect
+  message.success('已选中页面元素')
+}
+
+const handleVisualEditWheel = (event: WheelEvent) => {
+  const iframeWindow = previewIframeRef.value?.contentWindow
+  iframeWindow?.scrollBy({
+    left: event.deltaX,
+    top: event.deltaY,
+    behavior: 'auto',
+  })
+  window.requestAnimationFrame(() => {
+    handleVisualEditPointerMove(event)
+  })
 }
 
 const applyPreviewVisualEdit = async () => {
@@ -730,6 +887,7 @@ const applyPreviewVisualEdit = async () => {
 
 const clearSelectedVisualElement = () => {
   selectedVisualElement.value = undefined
+  visualEditSelectedRect.value = undefined
 }
 
 const disableVisualEditMode = () => {
@@ -817,6 +975,59 @@ const loadApp = async () => {
   message.error(`获取应用失败：${res.data.message || '请稍后重试'}`)
 }
 
+const parseVisualElementPrompt = (content: string) => {
+  const markerMatch = /\r?\n\r?\n选中元素信息：/.exec(content)
+  const markerIndex = markerMatch?.index ?? -1
+  if (markerIndex < 0) {
+    return {
+      displayContent: content,
+      rawContent: content,
+      visualElement: undefined,
+    }
+  }
+
+  const displayContent = content.slice(0, markerIndex).trim()
+  const promptContent = content.slice(markerIndex + (markerMatch?.[0].length || 0))
+  const readLine = (label: string) => {
+    const match = promptContent.match(new RegExp(`^- ${label}:\\s*(.*)$`, 'm'))
+    return match?.[1]?.trim()
+  }
+  const tagName = readLine('标签')
+  const selector = readLine('选择器')
+  if (!tagName || !selector) {
+    return {
+      displayContent,
+      rawContent: displayContent,
+      visualElement: undefined,
+    }
+  }
+
+  return {
+    displayContent,
+    rawContent: displayContent,
+    visualElement: {
+      tagName,
+      id: '',
+      className: '',
+      selector,
+      pagePath: readLine('页面路径') || '',
+      textContent: readLine('当前内容') || '',
+      text: readLine('当前内容') || '',
+      rect: {
+        width: 0,
+        height: 0,
+        top: 0,
+        left: 0,
+      },
+    },
+  }
+}
+
+const normalizeUserMessageForDisplay = (content: string) => {
+  const strippedContent = stripGenerationFormatInstruction(content)
+  return parseVisualElementPrompt(strippedContent)
+}
+
 const loadHistory = async (append = false) => {
   historyLoading.value = true
   try {
@@ -829,17 +1040,25 @@ const loadHistory = async (append = false) => {
     const records = res.data.data?.records ?? []
     // 后端按创建时间倒序返回，聊天窗口需要按旧到新展示。
     const orderedRecords = [...records].reverse()
-    const list = orderedRecords.map(
-      (item, index): ChatMessage => ({
+    const list = orderedRecords.map((item, index): ChatMessage => {
+      if (item.messageType !== 'user') {
+        return {
+          key: `history-${item.id || index}`,
+          type: 'ai',
+          content: item.message || '',
+          createTime: item.createTime,
+        }
+      }
+      const normalizedMessage = normalizeUserMessageForDisplay(item.message || '')
+      return {
         key: `history-${item.id || index}`,
-        type: item.messageType === 'user' ? 'user' : 'ai',
-        content:
-          item.messageType === 'user'
-            ? stripGenerationFormatInstruction(item.message || '')
-            : item.message || '',
+        type: 'user',
+        content: normalizedMessage.displayContent,
+        rawContent: normalizedMessage.rawContent,
+        visualElement: normalizedMessage.visualElement,
         createTime: item.createTime,
-      }),
-    )
+      }
+    })
 
     messages.value = append ? [...list, ...messages.value] : list
     // 下一页应查询比当前页最旧消息更早的数据。
@@ -1075,9 +1294,18 @@ const parseSseChunk = (raw: string): StreamChunk => {
     const data = (value as Record<string, unknown>).data
     const dataContent = typeof data === 'string' ? data : ''
     const record = value as Record<string, unknown>
+    const wrappedContent =
+      getStringField(record, ['d', 'content', 'text', 'message', 'answer']) || dataContent
+    const generatedFile = parseGeneratedFileSnapshot(wrappedContent)
+    if (generatedFile) {
+      return {
+        content: '',
+        thinking: '',
+        generatedFile,
+      }
+    }
     return {
-      content:
-        getStringField(record, ['d', 'content', 'text', 'message', 'answer']) || dataContent,
+      content: wrappedContent,
       thinking: getStringField(record, [
         'partialThinking',
         'thinking',
@@ -1089,6 +1317,33 @@ const parseSseChunk = (raw: string): StreamChunk => {
     }
   } catch {
     return { content: raw, thinking: '' }
+  }
+}
+
+const parseGeneratedFileSnapshot = (content: string): GeneratedFileSnapshot | undefined => {
+  if (!content || !content.trim().startsWith('{')) {
+    return undefined
+  }
+  try {
+    const value = JSON.parse(content) as Partial<GeneratedFileSnapshot>
+    if (value?.type !== 'generated_file_snapshot') {
+      return undefined
+    }
+    return {
+      type: 'generated_file_snapshot',
+      toolName: typeof value.toolName === 'string' ? value.toolName : undefined,
+      action: value.action,
+      actionLabel: typeof value.actionLabel === 'string' ? value.actionLabel : undefined,
+      path: typeof value.path === 'string' ? value.path : undefined,
+      language: typeof value.language === 'string' ? value.language : undefined,
+      content: typeof value.content === 'string' ? value.content : undefined,
+      files: Array.isArray(value.files)
+        ? value.files.filter((item): item is string => typeof item === 'string')
+        : undefined,
+      deleted: Boolean(value.deleted),
+    }
+  } catch {
+    return undefined
   }
 }
 
@@ -1279,6 +1534,7 @@ const appendAttachmentPrompt = (content: string) => {
 const resetGeneratedCodePanel = () => {
   generationCodeCaptureBuffer = ''
   generatedFiles.value = []
+  generatedFilePaths.value = []
 }
 
 const getDefaultGeneratedFilePath = (language = '', index = 0) => {
@@ -1350,6 +1606,35 @@ const upsertGeneratedFile = (file: GeneratedFilePanel) => {
   }
 }
 
+const applyGeneratedFileSnapshot = (snapshot: GeneratedFileSnapshot) => {
+  if (snapshot.files) {
+    generatedFilePaths.value = snapshot.files
+  }
+
+  const filePath = snapshot.path?.trim()
+  if (!filePath) {
+    return
+  }
+
+  if (snapshot.deleted) {
+    generatedFiles.value = generatedFiles.value.filter((item) => item.path !== filePath)
+    generatedFilePaths.value = generatedFilePaths.value.filter((path) => path !== filePath)
+    return
+  }
+
+  if (typeof snapshot.content !== 'string') {
+    return
+  }
+
+  upsertGeneratedFile({
+    path: filePath,
+    language: inferLanguage(filePath, snapshot.language || ''),
+    content: snapshot.content,
+    action: snapshot.action === 'modify' ? 'modify' : 'write',
+    actionLabel: snapshot.actionLabel || (snapshot.action === 'modify' ? '修改文件' : '写入文件'),
+  })
+}
+
 const syncFencedCodeBlocksFromBuffer = () => {
   const fencePattern = /```([a-zA-Z0-9_-]*)[^\S\r\n]*\r?\n/g
   let match: RegExpExecArray | null
@@ -1392,32 +1677,10 @@ const captureGeneratedCodeFromChunk = (content: string) => {
     generationCodeCaptureBuffer = generationCodeCaptureBuffer.slice(-240_000)
   }
 
-  if (appInfo.value.codeGenType !== 'vue_project') {
-    syncFencedCodeBlocksFromBuffer()
+  if (appInfo.value.codeGenType === 'vue_project') {
     return
   }
-
-  const toolBlockPattern = /\[工具调用\]\s*(写入文件|修改文件)\s+([^\n\r]+)([\s\S]*?)(?=\n\[工具调用\]|\n\[系统\]|$)/g
-  let match: RegExpExecArray | null
-  while ((match = toolBlockPattern.exec(generationCodeCaptureBuffer))) {
-    const actionText = match[1]
-    const filePath = match[2].trim()
-    const body = match[3] || ''
-    const codeSource = actionText === '修改文件'
-      ? body.split('替换后：').pop() || body
-      : body
-    const fencedCode = extractFencedCode(codeSource)
-    if (!filePath || !fencedCode || !fencedCode.content.trim()) {
-      continue
-    }
-    upsertGeneratedFile({
-      path: filePath,
-      language: inferLanguage(filePath, fencedCode.language),
-      content: fencedCode.content,
-      action: actionText === '修改文件' ? 'modify' : 'write',
-      actionLabel: actionText,
-    })
-  }
+  syncFencedCodeBlocksFromBuffer()
 }
 
 const buildGenerationRequestMessage = (content: string) => {
@@ -1487,6 +1750,9 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
   eventSource = new EventSource(url, { withCredentials: true })
   const handleStreamMessage = (event: MessageEvent, immediate = false) => {
     const chunk = parseSseChunk(event.data)
+    if (chunk.generatedFile) {
+      applyGeneratedFileSnapshot(chunk.generatedFile)
+    }
     if (chunk.thinking) {
       aiMessage.thinking = `${aiMessage.thinking || ''}${chunk.thinking}`
       scrollToBottom()
@@ -1537,6 +1803,48 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
   }
 }
 
+const getEditableUserMessageContent = (item: ChatMessage) => {
+  return (item.rawContent || item.content || '').trim()
+}
+
+const getCopyMessageContent = (item: ChatMessage) => {
+  if (item.type === 'user') {
+    return getEditableUserMessageContent(item)
+  }
+  const thinkingText = item.thinking ? `思考过程：\n${item.thinking.trim()}\n\n` : ''
+  return `${thinkingText}${item.content || ''}`.trim()
+}
+
+const focusComposer = async () => {
+  await nextTick()
+  const textarea = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+  textarea?.focus()
+}
+
+const copyMessage = async (item: ChatMessage) => {
+  const content = getCopyMessageContent(item)
+  if (!content) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(content)
+    message.success('消息已复制')
+  } catch (error) {
+    console.warn('复制消息失败：', error)
+    message.error('复制失败，请手动选择文本复制')
+  }
+}
+
+const editUserMessage = async (item: ChatMessage) => {
+  const content = getEditableUserMessageContent(item)
+  if (!content) {
+    return
+  }
+  inputMessage.value = content
+  clearSelectedVisualElement()
+  await focusComposer()
+}
+
 const sendMessage = () => {
   const content = inputMessage.value.trim()
   if ((!content && !attachments.value.length) || generating.value || uploadingAttachment.value) {
@@ -1562,7 +1870,9 @@ const sendMessage = () => {
   messages.value.push({
     key: `user-${Date.now()}`,
     type: 'user',
-    content: requestContent,
+    content: content || '请根据上传附件生成或修改应用',
+    rawContent: contentWithAttachments,
+    visualElement: cloneVisualElement(selectedElement),
   })
   // SSE 回调必须修改响应式对象，否则分片到达时页面不会立即重新渲染。
   const aiMessage = reactive<ChatMessage>({
@@ -2217,6 +2527,17 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 22px rgb(16 24 40 / 6%);
 }
 
+.message-content,
+.message-content :deep(*) {
+  user-select: text;
+}
+
+.message-content::selection,
+.message-content :deep(*)::selection {
+  color: #111827;
+  background: #bfdbfe;
+}
+
 .message-content.typing {
   min-width: 48px;
 }
@@ -2289,12 +2610,66 @@ onBeforeUnmount(() => {
   box-shadow: 0 6px 14px rgb(91 92 240 / 15%);
 }
 
+.user .message-content::selection,
+.user .message-content :deep(*)::selection {
+  color: #312e81;
+  background: #eee7ff;
+}
+
 .user .message-content :deep(.text-block),
 .user .message-content :deep(.summary-block),
 .user .message-content :deep(.summary-block p),
 .user .message-content :deep(.summary-block li),
 .user .message-content :deep(.summary-block strong) {
   color: #fff;
+}
+
+.sent-selected-element {
+  margin-top: 10px;
+  padding: 9px 10px;
+  color: #eef2ff;
+  font-size: 12px;
+  line-height: 1.7;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.sent-selected-element strong {
+  color: #fff;
+}
+
+.sent-selected-title {
+  margin-bottom: 2px;
+  color: #fff;
+  font-weight: 700;
+}
+
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.message-actions :deep(.ant-btn) {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: #7a7f92;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+
+.message-actions :deep(.ant-btn:hover) {
+  color: #5b5cf0;
+  border-color: #e6e4ff;
+  background: #f6f4ff;
+}
+
+.message-actions :deep(.ant-btn[disabled]) {
+  color: #c2c7d0;
+  background: transparent;
 }
 
 .message-time {
@@ -2574,6 +2949,29 @@ onBeforeUnmount(() => {
 
 .preview-viewport.visual-editing {
   box-shadow: inset 0 0 0 2px #5b5cf0;
+}
+
+.visual-edit-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  cursor: crosshair;
+}
+
+.visual-edit-box {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.visual-edit-box.hover {
+  border: 2px dashed #7c8cff;
+  background: rgb(124 140 255 / 8%);
+}
+
+.visual-edit-box.selected {
+  border: 3px solid #3949f5;
+  box-shadow: 0 0 0 4px rgb(57 73 245 / 18%);
 }
 
 .preview-frame {

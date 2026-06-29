@@ -28,6 +28,10 @@
           </button>
           <template #overlay>
             <a-menu>
+              <a-menu-item key="profile" @click="profileModalOpen = true">
+                <EditOutlined />
+                编辑资料
+              </a-menu-item>
               <a-menu-item key="logout" @click="doLogout">
                 <LogoutOutlined />
                 退出登录
@@ -41,6 +45,12 @@
         </a-button>
       </div>
     </div>
+    <UserProfileEditModal
+      v-model:open="profileModalOpen"
+      title="编辑个人资料"
+      :user="loginUserStore.loginUser"
+      @saved="loginUserStore.fetchLoginUser"
+    />
   </a-layout-header>
 </template>
 
@@ -50,6 +60,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   AppstoreOutlined,
   DownOutlined,
+  EditOutlined,
   HomeOutlined,
   LogoutOutlined,
   MessageOutlined,
@@ -61,6 +72,7 @@ import checkAccess from '@/checkAccess'
 import { userLogout } from '@/api/userController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import defaultAvatar from '@/assets/default-avatar.png'
+import UserProfileEditModal from '@/components/UserProfileEditModal.vue'
 
 type MenuItem = NonNullable<MenuProps['items']>[number] & {
   meta?: {
@@ -72,6 +84,7 @@ const loginUserStore = useLoginUserStore()
 const router = useRouter()
 const route = useRoute()
 const selectedKeys = ref<string[]>([route.path])
+const profileModalOpen = ref(false)
 
 const loginUserAvatar = computed(() => loginUserStore.loginUser.userAvatar?.trim() || defaultAvatar)
 const loginUserDisplayName = computed(

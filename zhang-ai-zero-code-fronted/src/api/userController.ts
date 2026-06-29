@@ -125,3 +125,19 @@ export async function updateUser(body: API.UserUpdateRequest, options?: { [key: 
     ...(options || {}),
   })
 }
+
+/** 上传用户头像 POST /user/avatar/upload */
+export async function uploadUserAvatar(
+  file: File,
+  userId?: string,
+  options?: { [key: string]: any }
+) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request<API.BaseResponseString>('/user/avatar/upload', {
+    method: 'POST',
+    params: userId ? { userId } : undefined,
+    data: formData,
+    ...(options || {}),
+  })
+}

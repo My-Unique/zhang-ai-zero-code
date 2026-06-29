@@ -62,10 +62,32 @@
             <ExportOutlined />
             预览
           </a-button>
-          <a-button size="small" :disabled="generationActive || !canCompare" @click="compareWithPrevious">
-            <DiffOutlined />
-            对比
-          </a-button>
+          <div class="compare-controls">
+            <span class="compare-label">对比</span>
+            <a-select
+              v-model:value="compareBaseVersionNo"
+              size="small"
+              class="compare-select"
+              :disabled="generationActive || versionOptions.length < 2"
+              :options="versionOptions"
+            />
+            <span class="compare-separator">与</span>
+            <a-select
+              v-model:value="compareTargetVersionNo"
+              size="small"
+              class="compare-select"
+              :disabled="generationActive || versionOptions.length < 2"
+              :options="versionOptions"
+            />
+            <a-tooltip :title="compareTooltip">
+              <span class="tooltip-button-wrap">
+                <a-button size="small" :disabled="generationActive || !canCompare" @click="compareSelectedVersions">
+                  <DiffOutlined />
+                  对比
+                </a-button>
+              </span>
+            </a-tooltip>
+          </div>
           <a-popconfirm title="确定将该版本设为当前版本吗？" @confirm="rollbackSelectedVersion">
             <a-button
               size="small"
@@ -89,7 +111,10 @@
       </div>
 
       <div v-if="diffVisible" class="diff-heading">
-        <span>v{{ previousVersionNo }} → v{{ selectedVersionNo }} · {{ selectedFile }}</span>
+        <div class="diff-title">
+          <strong>文件版本对比</strong>
+          <span>{{ diffRelationText }}</span>
+        </div>
         <a-button type="text" size="small" @click="diffVisible = false">返回编辑</a-button>
       </div>
 
@@ -98,12 +123,21 @@
           <section class="diff-pane">
             <header>
               <div>
-                <strong>v{{ previousVersionNo }}</strong>
-                <span class="diff-stat removed">{{ removalCount }} removals</span>
+                <strong>{{ previousDiffTitle }}</strong>
+                <span class="diff-source-role">对比基线</span>
+                <span class="diff-stat removed">删除 {{ removalCount }}</span>
               </div>
-              <a-button type="text" size="small" @click="copyDiffCode(diffData.oldCode || '')">
-                Copy
-              </a-button>
+              <a-tooltip title="复制旧版本代码">
+                <a-button
+                  type="text"
+                  size="small"
+                  shape="circle"
+                  aria-label="复制旧版本代码"
+                  @click="copyDiffCode(diffData.oldCode || '')"
+                >
+                  <CopyOutlined />
+                </a-button>
+              </a-tooltip>
             </header>
             <div class="diff-code">
               <div
@@ -113,19 +147,28 @@
                 :class="{ removed: row.type === 'remove', blank: row.type === 'add' }"
               >
                 <span class="line-no">{{ row.oldLineNo || '' }}</span>
-                <code>{{ row.oldText }}</code>
+                <code v-html="highlightCode(row.oldText, selectedFile)"></code>
               </div>
             </div>
           </section>
           <section class="diff-pane">
             <header>
               <div>
-                <strong>v{{ selectedVersionNo }}</strong>
-                <span class="diff-stat added">{{ additionCount }} additions</span>
+                <strong>{{ selectedDiffTitle }}</strong>
+                <span class="diff-source-role">对比目标</span>
+                <span class="diff-stat added">新增 {{ additionCount }}</span>
               </div>
-              <a-button type="text" size="small" @click="copyDiffCode(diffData.newCode || '')">
-                Copy
-              </a-button>
+              <a-tooltip title="复制当前版本代码">
+                <a-button
+                  type="text"
+                  size="small"
+                  shape="circle"
+                  aria-label="复制当前版本代码"
+                  @click="copyDiffCode(diffData.newCode || '')"
+                >
+                  <CopyOutlined />
+                </a-button>
+              </a-tooltip>
             </header>
             <div class="diff-code">
               <div
@@ -135,7 +178,7 @@
                 :class="{ added: row.type === 'add', blank: row.type === 'remove' }"
               >
                 <span class="line-no">{{ row.newLineNo || '' }}</span>
-                <code>{{ row.newText }}</code>
+                <code v-html="highlightCode(row.newText, selectedFile)"></code>
               </div>
             </div>
           </section>
@@ -151,16 +194,18 @@
             }}
           </p>
         </div>
-        <textarea
-          v-else
-          ref="codeEditorRef"
-          v-model="fileContent"
-          class="code-editor"
-          spellcheck="false"
-          :disabled="generationActive || !selectedFile"
-          @input="dirty = true"
-          @scroll.passive="handleCodeEditorScroll"
-        ></textarea>
+        <div v-else class="code-editor-shell">
+          <pre ref="codeHighlightRef" class="code-highlight" aria-hidden="true"><code v-html="highlightedFileContent"></code></pre>
+          <textarea
+            ref="codeEditorRef"
+            v-model="fileContent"
+            class="code-editor"
+            spellcheck="false"
+            :disabled="generationActive || !selectedFile"
+            @input="dirty = true"
+            @scroll.passive="handleCodeEditorScroll"
+          ></textarea>
+        </div>
       </a-spin>
     </section>
 
@@ -205,6 +250,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  CopyOutlined,
   DiffOutlined,
   ExclamationCircleOutlined,
   ExportOutlined,
@@ -236,6 +282,7 @@ const props = defineProps<{
   currentVersionNo: number
   generationActive?: boolean
   generatedFiles?: GeneratedWorkspaceFile[]
+  generatedFilePaths?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -262,7 +309,10 @@ const selectedKeys = ref<string[]>([])
 const fileSidebarWidth = ref(230)
 const followGeneratedFile = ref(true)
 const codeEditorRef = ref<HTMLTextAreaElement>()
+const codeHighlightRef = ref<HTMLElement>()
 const autoScrollCodeEditor = ref(true)
+const compareBaseVersionNo = ref(0)
+const compareTargetVersionNo = ref(0)
 let stopResize: (() => void) | undefined
 
 type FileTreeNode = {
@@ -307,6 +357,7 @@ const startResize = (event: PointerEvent) => {
 
 const generationActive = computed(() => Boolean(props.generationActive))
 const generatedFiles = computed(() => (generationActive.value ? props.generatedFiles || [] : []))
+const generatedFilePaths = computed(() => (generationActive.value ? props.generatedFilePaths || [] : []))
 const generatedFileMap = computed(() => {
   const map = new Map<string, GeneratedWorkspaceFile>()
   generatedFiles.value.forEach((file) => {
@@ -317,7 +368,8 @@ const generatedFileMap = computed(() => {
   return map
 })
 const workspaceFiles = computed(() => {
-  return Array.from(new Set([...files.value, ...generatedFileMap.value.keys()]))
+  const baseFiles = generatedFilePaths.value.length ? generatedFilePaths.value : files.value
+  return Array.from(new Set([...baseFiles, ...generatedFileMap.value.keys()]))
     .sort((a, b) => a.localeCompare(b))
 })
 const selectedGeneratedFile = computed(() => generatedFileMap.value.get(selectedFile.value))
@@ -374,14 +426,53 @@ const orderedVersionNos = computed(() =>
     .sort((a, b) => a - b),
 )
 
-const previousVersionNo = computed(() => {
-  const index = orderedVersionNos.value.indexOf(selectedVersionNo.value)
-  return index > 0 ? orderedVersionNos.value[index - 1] || 0 : 0
-})
+const versionOptions = computed(() =>
+  orderedVersionNos.value.map((versionNo) => ({
+    label: `v${versionNo}${versionNo === props.currentVersionNo ? ' 当前' : ''}`,
+    value: versionNo,
+  })),
+)
 
 const canCompare = computed(() =>
-  Boolean(selectedFile.value && selectedVersionNo.value && previousVersionNo.value),
+  Boolean(
+    selectedFile.value &&
+      compareBaseVersionNo.value &&
+      compareTargetVersionNo.value &&
+      compareBaseVersionNo.value !== compareTargetVersionNo.value,
+  ),
 )
+const getVersionRole = (versionNo: number) =>
+  versionNo === props.currentVersionNo ? '当前应用版本' : '历史版本'
+const previousDiffTitle = computed(() =>
+  compareBaseVersionNo.value ? `${getVersionRole(compareBaseVersionNo.value)} v${compareBaseVersionNo.value}` : '基准版本',
+)
+const selectedDiffTitle = computed(() =>
+  compareTargetVersionNo.value ? `${getVersionRole(compareTargetVersionNo.value)} v${compareTargetVersionNo.value}` : '目标版本',
+)
+const diffRelationText = computed(() => {
+  if (!selectedFile.value || !compareBaseVersionNo.value || !compareTargetVersionNo.value) {
+    return '请选择一个可对比的文件和版本'
+  }
+  return `${selectedFile.value}：${previousDiffTitle.value} 对比 ${selectedDiffTitle.value}`
+})
+const compareTooltip = computed(() => {
+  if (generationActive.value) {
+    return '生成中暂不可对比'
+  }
+  if (!selectedFile.value) {
+    return '请先选择要对比的文件'
+  }
+  if (versionOptions.value.length < 2) {
+    return '至少需要两个版本才能对比'
+  }
+  if (!compareBaseVersionNo.value || !compareTargetVersionNo.value) {
+    return '请选择对比双方'
+  }
+  if (compareBaseVersionNo.value === compareTargetVersionNo.value) {
+    return '对比双方不能是同一个版本'
+  }
+  return `对比 ${selectedFile.value}：v${compareBaseVersionNo.value} 与 v${compareTargetVersionNo.value}`
+})
 
 const splitCodeLines = (code?: string) => {
   if (!code) {
@@ -499,6 +590,53 @@ const diffRows = computed(() => buildDiffRows(diffData.value.oldCode, diffData.v
 const removalCount = computed(() => diffRows.value.filter((row) => row.type === 'remove').length)
 const additionCount = computed(() => diffRows.value.filter((row) => row.type === 'add').length)
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
+const protectToken = (
+  source: string,
+  pattern: RegExp,
+  className: string,
+  tokens: string[],
+) =>
+  source.replace(pattern, (match) => {
+    const token = `@@ZH_TOKEN_${tokens.length}@@`
+    tokens.push(`<span class="code-token ${className}">${match}</span>`)
+    return token
+  })
+
+const restoreTokens = (source: string, tokens: string[]) =>
+  source.replace(/@@ZH_TOKEN_(\d+)@@/g, (_, index) => tokens[Number(index)] || '')
+
+const highlightCode = (source: string, filePath: string) => {
+  const tokens: string[] = []
+  let html = escapeHtml(source)
+  html = protectToken(html, /(&lt;!--[\s\S]*?--&gt;|\/\*[\s\S]*?\*\/|\/\/[^\n]*)/g, 'comment', tokens)
+  html = protectToken(html, /(`(?:\\[\s\S]|[^`])*`|&quot;(?:\\.|[^&])*?&quot;|&#39;(?:\\.|[^&])*?&#39;)/g, 'string', tokens)
+  html = protectToken(html, /\b(\d+(?:\.\d+)?)(px|rem|em|vh|vw|%|s|ms)?\b/g, 'number', tokens)
+
+  html = protectToken(
+    html,
+    /\b(import|from|export|default|const|let|var|function|return|if|else|for|while|switch|case|break|continue|new|class|extends|async|await|try|catch|finally|throw|type|interface|as|in|of|true|false|null|undefined|ref|reactive|computed|watch|onMounted|defineProps|defineEmits)\b/g,
+    'keyword',
+    tokens,
+  )
+  html = protectToken(html, /([\w-]+)(?=\s*:)/g, 'property', tokens)
+
+  if (/\.(html|vue)$/i.test(filePath)) {
+    html = html.replace(/(&lt;\/?)([a-zA-Z][\w.-]*)/g, '$1<span class="code-token tag">$2</span>')
+    html = html.replace(/\s([:@#\w-]+)(?==)/g, ' <span class="code-token attr">$1</span>')
+  }
+  return restoreTokens(html, tokens)
+}
+
+const highlightedFileContent = computed(() => highlightCode(fileContent.value, selectedFile.value))
+
 const formatTime = (time?: string) => (time ? new Date(time).toLocaleString('zh-CN') : '-')
 
 const copyDiffCode = async (code: string) => {
@@ -515,6 +653,12 @@ const isCodeEditorNearBottom = () => {
 }
 
 const handleCodeEditorScroll = () => {
+  const editor = codeEditorRef.value
+  const highlight = codeHighlightRef.value
+  if (editor && highlight) {
+    highlight.scrollTop = editor.scrollTop
+    highlight.scrollLeft = editor.scrollLeft
+  }
   const nearBottom = isCodeEditorNearBottom()
   autoScrollCodeEditor.value = nearBottom
   if (generationActive.value) {
@@ -530,6 +674,10 @@ const scrollCodeEditorToBottom = async (force = false) => {
   }
   if (force || autoScrollCodeEditor.value || isCodeEditorNearBottom()) {
     editor.scrollTop = editor.scrollHeight
+    if (codeHighlightRef.value) {
+      codeHighlightRef.value.scrollTop = editor.scrollTop
+      codeHighlightRef.value.scrollLeft = editor.scrollLeft
+    }
   }
 }
 
@@ -546,11 +694,34 @@ const getRequestErrorText = (error: unknown) => {
   return requestError.response.data?.message || '版本文件加载失败'
 }
 
+const ensureCompareSelection = () => {
+  const versionNos = orderedVersionNos.value
+  if (!versionNos.length) {
+    compareBaseVersionNo.value = 0
+    compareTargetVersionNo.value = 0
+    return
+  }
+  if (!versionNos.includes(compareTargetVersionNo.value)) {
+    compareTargetVersionNo.value =
+      selectedVersionNo.value && versionNos.includes(selectedVersionNo.value)
+        ? selectedVersionNo.value
+        : versionNos[versionNos.length - 1] || 0
+  }
+  if (!versionNos.includes(compareBaseVersionNo.value) || compareBaseVersionNo.value === compareTargetVersionNo.value) {
+    const targetIndex = versionNos.indexOf(compareTargetVersionNo.value)
+    compareBaseVersionNo.value =
+      targetIndex > 0
+        ? versionNos[targetIndex - 1] || 0
+        : versionNos.find((versionNo) => versionNo !== compareTargetVersionNo.value) || 0
+  }
+}
+
 const loadVersions = async () => {
   loadingVersions.value = true
   try {
     const res = await listAppVersions({ appId: props.appId })
     versions.value = res.data.data || []
+    ensureCompareSelection()
     if (!selectedVersionNo.value && versions.value.length) {
       await selectVersion(props.currentVersionNo || versions.value[0]?.versionNo || 0)
     }
@@ -562,6 +733,8 @@ const loadVersions = async () => {
 const selectVersion = async (versionNo: number) => {
   if (!versionNo) return
   selectedVersionNo.value = versionNo
+  compareTargetVersionNo.value = versionNo
+  ensureCompareSelection()
   selectedFile.value = ''
   fileContent.value = ''
   dirty.value = false
@@ -675,18 +848,23 @@ const rollbackSelectedVersion = async () => {
   await loadVersions()
 }
 
-const compareWithPrevious = async () => {
+const compareSelectedVersions = async () => {
   if (!canCompare.value) return
   loadingDiff.value = true
   try {
     const res = await diffVersion({
       appId: props.appId,
-      oldVersionNo: previousVersionNo.value,
-      newVersionNo: selectedVersionNo.value,
+      oldVersionNo: compareBaseVersionNo.value,
+      newVersionNo: compareTargetVersionNo.value,
       fileName: selectedFile.value,
     })
+    if (res.data.code !== 0) {
+      message.error(res.data.message || '对比失败')
+      return
+    }
     diffData.value = res.data.data || {}
     diffVisible.value = true
+    message.success(`正在对比 ${selectedFile.value}：v${compareBaseVersionNo.value} 与 v${compareTargetVersionNo.value}`)
   } finally {
     loadingDiff.value = false
   }
@@ -705,8 +883,13 @@ watch(
   () => props.currentVersionNo,
   (versionNo) => {
     if (versionNo && !selectedVersionNo.value) selectVersion(versionNo)
+    ensureCompareSelection()
   },
 )
+
+watch([compareBaseVersionNo, compareTargetVersionNo, selectedFile], () => {
+  diffVisible.value = false
+})
 
 watch(fileKeyword, (keyword) => {
   if (keyword.trim()) expandedKeys.value = getDirectoryKeys(fileTree.value)
@@ -745,6 +928,25 @@ watch(
       fileContent.value = generatedFile.content
       dirty.value = false
       scrollCodeEditorToBottom()
+    }
+  },
+  { deep: true },
+)
+
+watch(
+  generatedFilePaths,
+  async (paths) => {
+    if (!generationActive.value || !paths.length) {
+      return
+    }
+    expandedKeys.value = getDirectoryKeys(fileTree.value)
+    if (selectedFile.value && !workspaceFiles.value.includes(selectedFile.value)) {
+      selectedFile.value = ''
+      selectedKeys.value = []
+      fileContent.value = ''
+    }
+    if (!selectedFile.value && latestGeneratedFile.value?.path) {
+      await selectFile(latestGeneratedFile.value.path, { forceScroll: true })
     }
   },
   { deep: true },
@@ -1025,6 +1227,37 @@ onBeforeUnmount(() => stopResize?.())
   flex-wrap: wrap;
 }
 
+.tooltip-button-wrap {
+  display: inline-flex;
+}
+
+.compare-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid #ecebff;
+  border-radius: 8px;
+  background: #faf9ff;
+}
+
+.compare-label,
+.compare-separator {
+  color: #667085;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.compare-label {
+  padding-left: 4px;
+  font-weight: 600;
+}
+
+.compare-select {
+  width: 92px;
+}
+
 .file-meta span {
   margin-top: 2px;
   color: #98a2b3;
@@ -1032,12 +1265,30 @@ onBeforeUnmount(() => stopResize?.())
 }
 
 .diff-heading {
-  height: 34px;
-  padding: 0 12px;
+  min-height: 46px;
+  gap: 12px;
+  padding: 8px 12px;
   color: #667085;
   font-size: 9px;
   border-bottom: 1px solid #eaecf0;
   background: #f9fafb;
+}
+
+.diff-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.diff-title strong {
+  color: #344054;
+  font-size: 11px;
+}
+
+.diff-title span {
+  color: #667085;
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 .code-panel :deep(.ant-spin-nested-loading),
@@ -1047,20 +1298,87 @@ onBeforeUnmount(() => stopResize?.())
   height: 100%;
 }
 
-.code-editor {
+.code-editor-shell {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 0;
+  background: #fff;
+  overflow: hidden;
+}
+
+.code-highlight,
+.code-editor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   padding: 20px;
-  color: #d6deeb;
-  border: 0;
-  outline: none;
-  background: #0f1728;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.75;
-  resize: none;
+  white-space: pre;
   tab-size: 2;
+  overflow: auto;
+}
+
+.code-highlight {
+  color: #344054;
+  background: #fff;
+  pointer-events: none;
+}
+
+.code-editor {
+  color: transparent;
+  caret-color: #4f50d8;
+  border: 0;
+  outline: none;
+  background: transparent;
+  resize: none;
+  -webkit-text-fill-color: transparent;
+}
+
+.code-editor::selection {
+  background: rgb(124 92 255 / 20%);
+}
+
+.code-highlight :deep(.code-token.comment),
+.diff-code :deep(.code-token.comment) {
+  color: #8a94a6;
+  font-style: italic;
+}
+
+.code-highlight :deep(.code-token.string),
+.diff-code :deep(.code-token.string) {
+  color: #0f766e;
+}
+
+.code-highlight :deep(.code-token.number),
+.diff-code :deep(.code-token.number) {
+  color: #b45309;
+}
+
+.code-highlight :deep(.code-token.keyword),
+.diff-code :deep(.code-token.keyword) {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+.code-highlight :deep(.code-token.tag),
+.diff-code :deep(.code-token.tag) {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.code-highlight :deep(.code-token.attr),
+.diff-code :deep(.code-token.attr) {
+  color: #c2410c;
+}
+
+.code-highlight :deep(.code-token.property),
+.diff-code :deep(.code-token.property) {
+  color: #0369a1;
 }
 
 .code-empty {
@@ -1162,6 +1480,21 @@ onBeforeUnmount(() => stopResize?.())
   font-size: 12px;
 }
 
+.diff-source-role {
+  color: #7a5af8;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.diff-pane header :deep(.ant-btn) {
+  color: #667085;
+}
+
+.diff-pane header :deep(.ant-btn:hover) {
+  color: #5b5cf0;
+  background: #f6f4ff;
+}
+
 .diff-stat {
   display: inline-flex;
   align-items: center;
@@ -1258,6 +1591,15 @@ onBeforeUnmount(() => stopResize?.())
 
   .toolbar-actions :deep(.ant-btn span:not(.anticon)) {
     display: none;
+  }
+
+  .compare-label,
+  .compare-separator {
+    display: none;
+  }
+
+  .compare-select {
+    width: 78px;
   }
 }
 </style>
