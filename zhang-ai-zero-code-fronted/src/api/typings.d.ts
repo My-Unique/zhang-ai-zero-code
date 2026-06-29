@@ -93,6 +93,7 @@ declare namespace API {
     versionNo?: number
     userMessage?: string
     codePath?: string
+    cover?: string
     createTime?: string
   }
 

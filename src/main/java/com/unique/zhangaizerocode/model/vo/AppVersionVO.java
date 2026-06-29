@@ -19,5 +19,7 @@ public class AppVersionVO implements Serializable {
 
     private String codePath;
 
+    private String cover;
+
     private LocalDateTime createTime;
 }

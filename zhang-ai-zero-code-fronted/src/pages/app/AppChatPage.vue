@@ -319,7 +319,7 @@
               <button
                 type="button"
                 :class="{ active: rightPanelMode === 'code' }"
-                :disabled="!generating && (appInfo.versionNo || 0) <= 0"
+                :disabled="(appInfo.versionNo || 0) <= 0"
                 @click="rightPanelMode = 'code'"
               >
                 <CodeOutlined /> 代码
@@ -371,9 +371,8 @@
           v-if="rightPanelMode === 'code'"
           :app-id="appId"
           :current-version-no="appInfo.versionNo || 0"
+          :current-cover="appInfo.cover || ''"
           :generation-active="generating"
-          :generated-files="generatedFiles"
-          :generated-file-paths="generatedFilePaths"
           @version-change="handleVersionChange"
           @preview-version="handleVersionPreview"
         />
@@ -630,6 +629,7 @@ let lastSentMessage = ''
 let streamSucceeded = false
 let generationStoppedByUser = false
 let pageLeftDuringGeneration = false
+let coverRefreshToken = 0
 let typewriterTimer: ReturnType<typeof setInterval> | undefined
 let typewriterQueue: string[] = []
 let typewriterCursor = 0
@@ -973,6 +973,30 @@ const loadApp = async () => {
     return
   }
   message.error(`获取应用失败：${res.data.message || '请稍后重试'}`)
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+const refreshCoverAfterPreview = async (versionNo: number, previousCover: string) => {
+  if (!versionNo) {
+    return
+  }
+  const currentToken = ++coverRefreshToken
+  const intervals = [1200, 1800, 2600, 3600]
+  for (const interval of intervals) {
+    await sleep(interval)
+    if (currentToken !== coverRefreshToken) {
+      return
+    }
+    if ((appInfo.value.versionNo || 0) !== versionNo) {
+      return
+    }
+    await loadApp()
+    const nextCover = appInfo.value.cover || ''
+    if (nextCover && nextCover !== previousCover) {
+      return
+    }
+  }
 }
 
 const parseVisualElementPrompt = (content: string) => {
@@ -1866,7 +1890,6 @@ const sendMessage = () => {
   generationError.value = ''
   resetTypewriter()
   resetGeneratedCodePanel()
-  rightPanelMode.value = 'code'
   messages.value.push({
     key: `user-${Date.now()}`,
     type: 'user',
@@ -1902,7 +1925,6 @@ const reconnectGeneration = async () => {
   generationError.value = ''
   resetTypewriter()
   resetGeneratedCodePanel()
-  rightPanelMode.value = 'code'
 
   const aiMessage = reactive<ChatMessage>({
     key: `ai-reconnect-${Date.now()}`,
@@ -1968,6 +1990,7 @@ const refreshPreview = () => {
 
 const buildPreview = async () => {
   previewBuilding.value = true
+  const previousCover = appInfo.value.cover || ''
   try {
     const res = await previewApp({ appId })
     if (res.data.code !== 0 || !res.data.data) {
@@ -1980,6 +2003,7 @@ const buildPreview = async () => {
     previewReady.value = true
     previewKey.value += 1
     observePreviewViewport()
+    void refreshCoverAfterPreview(appInfo.value.versionNo || 0, previousCover)
   } catch (error) {
     const errorText = error instanceof Error ? error.message : '预览构建失败'
     generationError.value = `生成完成，但预览构建失败：${errorText}`
@@ -2194,6 +2218,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  coverRefreshToken += 1
   cleanupVisualEditSelection?.()
   cleanupVisualEditSelection = undefined
   clearPreviewVisualEdit()
@@ -2648,28 +2673,67 @@ onBeforeUnmount(() => {
 .message-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 5px;
-  margin-top: 5px;
+  gap: 6px;
+  margin-top: 7px;
+  padding-right: 2px;
 }
 
 .message-actions :deep(.ant-btn) {
-  width: 24px;
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  color: #7a7f92;
-  font-size: 12px;
-  border: 1px solid transparent;
+  color: #667085;
+  font-size: 13px;
+  border: 1px solid #e4e7f5;
+  border-radius: 8px;
+  background: #fbfbff;
+  box-shadow: 0 2px 8px rgb(16 24 40 / 4%);
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 }
 
 .message-actions :deep(.ant-btn:hover) {
   color: #5b5cf0;
-  border-color: #e6e4ff;
-  background: #f6f4ff;
+  border-color: #c8c7ff;
+  background: #f2f1ff;
+  box-shadow: 0 6px 14px rgb(91 92 240 / 12%);
+  transform: translateY(-1px);
 }
 
 .message-actions :deep(.ant-btn[disabled]) {
-  color: #c2c7d0;
-  background: transparent;
+  color: #b8becb;
+  border-color: #eef0f5;
+  background: #fafbfe;
+  box-shadow: none;
+  transform: none;
+}
+
+.user .message-actions :deep(.ant-btn) {
+  color: #5b5cf0;
+  border-color: #d9d7ff;
+  background: #f7f6ff;
+  box-shadow: 0 2px 8px rgb(91 92 240 / 7%);
+}
+
+.user .message-actions :deep(.ant-btn:hover) {
+  color: #4338ca;
+  border-color: #bdb9ff;
+  background: #efedff;
+  box-shadow: 0 6px 14px rgb(91 92 240 / 13%);
+}
+
+.user .message-actions :deep(.ant-btn[disabled]) {
+  color: #b9b7d9;
+  border-color: #ecebff;
+  background: #faf9ff;
+  box-shadow: none;
 }
 
 .message-time {

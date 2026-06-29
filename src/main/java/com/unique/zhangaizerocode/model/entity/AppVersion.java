@@ -61,6 +61,12 @@ public class AppVersion implements Serializable {
     private String codePath;
 
     /**
+     * 当前版本的预览截图
+     */
+    @Column("cover")
+    private String cover;
+
+    /**
      * 创建用户 id
      */
     @Column("createUser")

@@ -4,6 +4,7 @@ ALTER TABLE app ADD COLUMN deployedVersionNo BIGINT DEFAULT 0 COMMENT '已部署
 ALTER TABLE app ADD COLUMN downloadCount BIGINT DEFAULT 0 NOT NULL COMMENT '下载次数';
 ALTER TABLE app ADD COLUMN generationStatus VARCHAR(32) DEFAULT 'not_generated' NOT NULL COMMENT '生成状态：not_generated/generating/succeeded/failed';
 ALTER TABLE app ADD COLUMN visibility VARCHAR(32) DEFAULT 'private' NOT NULL COMMENT '可见范围：private/public';
+ALTER TABLE app_version ADD COLUMN cover VARCHAR(512) NULL COMMENT '版本预览截图';
 
 -- 修复历史数据：旧应用可能已经有版本记录，但 app 表中的当前版本、生成状态、部署版本没有回填。
 UPDATE app a

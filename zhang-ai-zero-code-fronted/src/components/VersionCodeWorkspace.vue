@@ -40,24 +40,12 @@
       <div class="code-toolbar">
         <div class="file-meta">
           <strong>{{ selectedFile || '选择文件查看源码' }}</strong>
-          <span v-if="selectedFileGenerated">
-            生成中 · {{ selectedGeneratedFile?.actionLabel || '更新文件' }}
-          </span>
-          <span v-else-if="selectedVersionNo">
+          <span v-if="selectedVersionNo">
             v{{ selectedVersionNo }}
             <template v-if="dirty"> · 有未保存修改</template>
           </span>
         </div>
         <div class="toolbar-actions">
-          <a-button
-            v-if="showFollowLatestButton"
-            size="small"
-            type="primary"
-            ghost
-            @click="followLatestGeneratedFile"
-          >
-            查看最新
-          </a-button>
           <a-button size="small" :disabled="generationActive || !selectedVersionNo" @click="openVersionPreview">
             <ExportOutlined />
             预览
@@ -217,29 +205,26 @@
         </div>
       </div>
       <button
-        v-if="generationActive"
-        type="button"
-        class="version-item active"
-      >
-        <span>
-          <strong>生成中</strong>
-          <a-tag color="blue">当前</a-tag>
-        </span>
-        <small>{{ generatedFiles.length ? '正在写入或修改文件' : '等待工具调用' }}</small>
-        <time>实时</time>
-      </button>
-      <button
         v-for="version in versions"
         :key="version.versionNo"
         type="button"
         class="version-item"
-        :class="{ active: !generationActive && version.versionNo === selectedVersionNo }"
+        :class="{ active: normalizeVersionNo(version.versionNo) === selectedVersionNo }"
         @click="selectVersion(version.versionNo || 0)"
       >
         <span>
           <strong>v{{ version.versionNo }}</strong>
           <a-tag v-if="version.versionNo === currentVersionNo" color="blue">当前</a-tag>
         </span>
+        <div class="version-thumb">
+          <img
+            v-if="getVersionCover(version)"
+            :src="getVersionCover(version)"
+            alt="版本预览截图"
+          />
+          <span v-else-if="thumbnailRefreshing">加载中</span>
+          <span v-else>v{{ version.versionNo }}</span>
+        </div>
         <small>{{ version.userMessage || '代码版本' }}</small>
         <time>{{ formatTime(version.createTime) }}</time>
       </button>
@@ -271,18 +256,11 @@ import {
   saveVersionFile,
 } from '@/api/appVersionController'
 
-type GeneratedWorkspaceFile = {
-  path: string
-  content: string
-  actionLabel?: string
-}
-
 const props = defineProps<{
   appId: string
   currentVersionNo: number
+  currentCover?: string
   generationActive?: boolean
-  generatedFiles?: GeneratedWorkspaceFile[]
-  generatedFilePaths?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -307,12 +285,14 @@ const fileError = ref('')
 const expandedKeys = ref<string[]>([])
 const selectedKeys = ref<string[]>([])
 const fileSidebarWidth = ref(230)
-const followGeneratedFile = ref(true)
 const codeEditorRef = ref<HTMLTextAreaElement>()
 const codeHighlightRef = ref<HTMLElement>()
 const autoScrollCodeEditor = ref(true)
 const compareBaseVersionNo = ref(0)
 const compareTargetVersionNo = ref(0)
+const thumbnailRefreshing = ref(false)
+let thumbnailRefreshTimer: ReturnType<typeof window.setTimeout> | undefined
+let thumbnailRefreshCount = 0
 let stopResize: (() => void) | undefined
 
 type FileTreeNode = {
@@ -356,35 +336,16 @@ const startResize = (event: PointerEvent) => {
 }
 
 const generationActive = computed(() => Boolean(props.generationActive))
-const generatedFiles = computed(() => (generationActive.value ? props.generatedFiles || [] : []))
-const generatedFilePaths = computed(() => (generationActive.value ? props.generatedFilePaths || [] : []))
-const generatedFileMap = computed(() => {
-  const map = new Map<string, GeneratedWorkspaceFile>()
-  generatedFiles.value.forEach((file) => {
-    if (file.path) {
-      map.set(file.path, file)
-    }
-  })
-  return map
-})
-const workspaceFiles = computed(() => {
-  const baseFiles = generatedFilePaths.value.length ? generatedFilePaths.value : files.value
-  return Array.from(new Set([...baseFiles, ...generatedFileMap.value.keys()]))
-    .sort((a, b) => a.localeCompare(b))
-})
-const selectedGeneratedFile = computed(() => generatedFileMap.value.get(selectedFile.value))
-const selectedFileGenerated = computed(() => Boolean(selectedGeneratedFile.value))
-const latestGeneratedFile = computed(() => generatedFiles.value[generatedFiles.value.length - 1])
-const showFollowLatestButton = computed(() => {
-  if (!generationActive.value || !latestGeneratedFile.value) {
-    return false
-  }
-  return (
-    !followGeneratedFile.value ||
-    !autoScrollCodeEditor.value ||
-    selectedFile.value !== latestGeneratedFile.value.path
-  )
-})
+const normalizeVersionNo = (versionNo?: number | string | null) => {
+  const parsedVersionNo = Number(versionNo)
+  return Number.isInteger(parsedVersionNo) && parsedVersionNo > 0 ? parsedVersionNo : 0
+}
+const workspaceFiles = computed(() => files.value.slice().sort((a, b) => a.localeCompare(b)))
+
+const cleanFileTreeTitle = (name: string) => {
+  const sourceNameMatch = name.match(/^(.+\.(?:vue|jsx?|tsx?|css|html|json|md|txt|ya?ml))\s+.+$/i)
+  return sourceNameMatch?.[1] || name
+}
 
 const filteredFiles = computed(() => {
   const keyword = fileKeyword.value.trim().toLowerCase()
@@ -404,7 +365,7 @@ const fileTree = computed<FileTreeNode[]>(() => {
       if (!node) {
         node = {
           key,
-          title: part,
+          title: cleanFileTreeTitle(part),
           isLeaf: index === parts.length - 1,
           children: index === parts.length - 1 ? undefined : [],
         }
@@ -421,7 +382,7 @@ const getDirectoryKeys = (nodes: FileTreeNode[]): string[] =>
 
 const orderedVersionNos = computed(() =>
   versions.value
-    .map((version) => version.versionNo || 0)
+    .map((version) => normalizeVersionNo(version.versionNo))
     .filter(Boolean)
     .sort((a, b) => a - b),
 )
@@ -661,9 +622,6 @@ const handleCodeEditorScroll = () => {
   }
   const nearBottom = isCodeEditorNearBottom()
   autoScrollCodeEditor.value = nearBottom
-  if (generationActive.value) {
-    followGeneratedFile.value = nearBottom
-  }
 }
 
 const scrollCodeEditorToBottom = async (force = false) => {
@@ -723,17 +681,22 @@ const loadVersions = async () => {
     versions.value = res.data.data || []
     ensureCompareSelection()
     if (!selectedVersionNo.value && versions.value.length) {
-      await selectVersion(props.currentVersionNo || versions.value[0]?.versionNo || 0)
+      const latestVersionNo = orderedVersionNos.value[orderedVersionNos.value.length - 1] || 0
+      await selectVersion(normalizeVersionNo(props.currentVersionNo) || latestVersionNo)
     }
+    scheduleThumbnailRefresh()
   } finally {
     loadingVersions.value = false
   }
 }
 
-const selectVersion = async (versionNo: number) => {
-  if (!versionNo) return
-  selectedVersionNo.value = versionNo
-  compareTargetVersionNo.value = versionNo
+const selectVersion = async (versionNo?: number | string | null) => {
+  const safeVersionNo = normalizeVersionNo(versionNo)
+  if (!safeVersionNo) {
+    return
+  }
+  selectedVersionNo.value = safeVersionNo
+  compareTargetVersionNo.value = safeVersionNo
   ensureCompareSelection()
   selectedFile.value = ''
   fileContent.value = ''
@@ -742,7 +705,7 @@ const selectVersion = async (versionNo: number) => {
   fileError.value = ''
   loadingFile.value = true
   try {
-    const res = await listVersionFiles({ appId: props.appId, versionNo })
+    const res = await listVersionFiles({ appId: props.appId, versionNo: safeVersionNo })
     if (res.data.code !== 0) {
       throw new Error(res.data.message || '版本文件加载失败')
     }
@@ -766,13 +729,6 @@ const selectFile = async (filePath: string, options: { forceScroll?: boolean } =
   selectedKeys.value = [filePath]
   autoScrollCodeEditor.value = true
   diffVisible.value = false
-  const generatedFile = generatedFileMap.value.get(filePath)
-  if (generatedFile) {
-    fileContent.value = generatedFile.content
-    dirty.value = false
-    scrollCodeEditorToBottom(options.forceScroll ?? true)
-    return
-  }
   if (!selectedVersionNo.value) {
     fileContent.value = ''
     dirty.value = false
@@ -793,23 +749,57 @@ const selectFile = async (filePath: string, options: { forceScroll?: boolean } =
   }
 }
 
-const followLatestGeneratedFile = async () => {
-  followGeneratedFile.value = true
-  autoScrollCodeEditor.value = true
-  if (latestGeneratedFile.value?.path) {
-    await selectFile(latestGeneratedFile.value.path, { forceScroll: true })
+const toggleDirectoryExpanded = (nodeKey: string) => {
+  if (!nodeKey) {
     return
   }
-  await scrollCodeEditorToBottom(true)
+  expandedKeys.value = expandedKeys.value.includes(nodeKey)
+    ? expandedKeys.value.filter((key) => key !== nodeKey)
+    : [...expandedKeys.value, nodeKey]
 }
 
 const handleTreeSelect = (keys: Array<string | number>, info: { node: FileTreeNode }) => {
   if (info.node.isLeaf && keys[0]) {
-    followGeneratedFile.value = false
     selectFile(String(keys[0]))
     return
   }
+  if (!info.node.isLeaf) {
+    toggleDirectoryExpanded(String(info.node.key))
+  }
   selectedKeys.value = selectedFile.value ? [selectedFile.value] : []
+}
+
+const getVersionCover = (version: API.AppVersionVO) => {
+  const cover = version.cover?.trim()
+  if (cover) {
+    return cover
+  }
+  if (normalizeVersionNo(version.versionNo) === normalizeVersionNo(props.currentVersionNo)) {
+    return props.currentCover?.trim() || ''
+  }
+  return ''
+}
+
+const clearThumbnailRefreshTimer = () => {
+  if (thumbnailRefreshTimer) {
+    window.clearTimeout(thumbnailRefreshTimer)
+    thumbnailRefreshTimer = undefined
+  }
+}
+
+const scheduleThumbnailRefresh = () => {
+  clearThumbnailRefreshTimer()
+  const hasMissingCover = versions.value.some((version) => !getVersionCover(version))
+  if (!hasMissingCover || thumbnailRefreshCount >= 10) {
+    thumbnailRefreshing.value = false
+    return
+  }
+  thumbnailRefreshing.value = true
+  thumbnailRefreshCount += 1
+  const refreshDelay = Math.min(700 + thumbnailRefreshCount * 350, 2500)
+  thumbnailRefreshTimer = window.setTimeout(() => {
+    loadVersions()
+  }, refreshDelay)
 }
 
 const saveFile = async () => {
@@ -881,8 +871,13 @@ const openVersionPreview = async () => {
 
 watch(
   () => props.currentVersionNo,
-  (versionNo) => {
-    if (versionNo && !selectedVersionNo.value) selectVersion(versionNo)
+  async (versionNo) => {
+    const safeVersionNo = normalizeVersionNo(versionNo)
+    if (safeVersionNo && safeVersionNo !== selectedVersionNo.value) {
+      thumbnailRefreshCount = 0
+      await loadVersions()
+      await selectVersion(safeVersionNo)
+    }
     ensureCompareSelection()
   },
 )
@@ -895,65 +890,11 @@ watch(fileKeyword, (keyword) => {
   if (keyword.trim()) expandedKeys.value = getDirectoryKeys(fileTree.value)
 })
 
-watch(
-  () => props.generationActive,
-  (active) => {
-    if (active) {
-      followGeneratedFile.value = true
-      autoScrollCodeEditor.value = true
-    }
-  },
-)
-
-watch(
-  generatedFiles,
-  async (files) => {
-    const latestFile = files[files.length - 1]
-    if (generationActive.value && latestFile?.path && !selectedFile.value) {
-      await selectFile(latestFile.path, { forceScroll: true })
-      return
-    }
-    if (
-      generationActive.value &&
-      latestFile?.path &&
-      followGeneratedFile.value &&
-      autoScrollCodeEditor.value &&
-      selectedFile.value !== latestFile.path
-    ) {
-      await selectFile(latestFile.path, { forceScroll: true })
-      return
-    }
-    const generatedFile = selectedGeneratedFile.value
-    if (generatedFile) {
-      fileContent.value = generatedFile.content
-      dirty.value = false
-      scrollCodeEditorToBottom()
-    }
-  },
-  { deep: true },
-)
-
-watch(
-  generatedFilePaths,
-  async (paths) => {
-    if (!generationActive.value || !paths.length) {
-      return
-    }
-    expandedKeys.value = getDirectoryKeys(fileTree.value)
-    if (selectedFile.value && !workspaceFiles.value.includes(selectedFile.value)) {
-      selectedFile.value = ''
-      selectedKeys.value = []
-      fileContent.value = ''
-    }
-    if (!selectedFile.value && latestGeneratedFile.value?.path) {
-      await selectFile(latestGeneratedFile.value.path, { forceScroll: true })
-    }
-  },
-  { deep: true },
-)
-
 onMounted(loadVersions)
-onBeforeUnmount(() => stopResize?.())
+onBeforeUnmount(() => {
+  clearThumbnailRefreshTimer()
+  stopResize?.()
+})
 </script>
 
 <style scoped>
@@ -980,8 +921,9 @@ onBeforeUnmount(() => stopResize?.())
 }
 
 .version-sidebar {
-  width: 190px;
+  width: 150px;
   border-left: 0;
+  background: #fff;
 }
 
 .resize-handle {
@@ -1081,32 +1023,83 @@ onBeforeUnmount(() => stopResize?.())
 .version-item {
   display: grid;
   gap: 4px;
-  margin-bottom: 7px;
-  padding: 11px;
+  margin-bottom: 14px;
+  padding: 0;
   text-align: left;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  border: 0;
+  border-radius: 0;
 }
 
 .version-item:hover,
 .version-item.active {
-  color: #4f50d8;
-  border-color: #dddfff;
-  background: #eeeeff;
+  color: #111827;
+  background: transparent;
+}
+
+.version-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid #d9dee8;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.version-item.active .version-thumb {
+  border-color: #111827;
+  box-shadow: 0 0 0 1px #111827;
+}
+
+.version-thumb iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1260px;
+  height: 709px;
+  border: 0;
+  pointer-events: none;
+  transform: scale(0.1);
+  transform-origin: top left;
+}
+
+.version-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.version-thumb span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #7a5af8;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .version-item > span {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.version-item > span strong {
+  font-weight: 600;
 }
 
 .version-item small,
 .version-item time {
-  overflow: hidden;
-  font-size: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: none;
 }
 
 .version-item time {
@@ -1117,20 +1110,21 @@ onBeforeUnmount(() => stopResize?.())
   margin-top: 10px;
   color: #667085;
   background: transparent;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .file-tree :deep(.ant-tree-treenode) {
   width: 100%;
-  padding: 1px 0;
+  padding: 0;
 }
 
 .file-tree :deep(.ant-tree-node-content-wrapper) {
   min-width: 0;
   flex: 1;
-  padding: 4px 6px;
+  padding: 3px 6px;
   overflow: hidden;
   border-radius: 6px;
+  line-height: 22px;
 }
 
 .file-tree :deep(.ant-tree-node-content-wrapper:hover) {
@@ -1144,24 +1138,19 @@ onBeforeUnmount(() => stopResize?.())
 }
 
 .file-tree :deep(.ant-tree-title) {
-  display: inline-block;
-  max-width: calc(100% - 4px);
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  vertical-align: bottom;
   white-space: nowrap;
 }
 
 .file-tree :deep(.ant-tree-node-content-wrapper:hover .ant-tree-title) {
-  position: relative;
-  z-index: 2;
-  max-width: none;
-  padding-right: 5px;
-  background: #f0f0ff;
+  max-width: 100%;
 }
 
 .file-tree :deep(.ant-tree-switcher) {
-  width: 18px;
+  width: 20px;
   color: #98a2b3;
 }
 

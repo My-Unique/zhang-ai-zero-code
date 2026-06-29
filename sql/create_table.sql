@@ -60,6 +60,7 @@ CREATE TABLE app_version (
                              versionNo LONG NOT NULL COMMENT '版本号，从 1 开始',
                              userMessage TEXT COMMENT '用户本次生成/修改的提示词',
                              codePath VARCHAR(512) NOT NULL COMMENT '代码文件路径',
+                             cover VARCHAR(512) NULL COMMENT '版本预览截图',
                              createUser BIGINT NOT NULL COMMENT '创建用户 id',
                              createTime DATETIME DEFAULT CURRENT_TIMESTAMP,
                              updateTime DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

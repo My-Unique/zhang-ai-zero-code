@@ -49,6 +49,7 @@ import java.io.Serializable;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -80,6 +81,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     private ScreenshotService screenshotService;
     @Resource
     private CosManager cosManager;
+
+    private final Set<Long> versionCoverRepairingApps = ConcurrentHashMap.newKeySet();
 
 
     /**
@@ -554,8 +557,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             return false;
         }
         String lowerResult = result.toLowerCase(Locale.ROOT);
-        return result.contains("成功")
-                || lowerResult.contains("success");
+        if (result.contains("成功") || lowerResult.contains("success")) {
+            return true;
+        }
+        return !result.contains("失败")
+                && !result.contains("错误")
+                && !result.contains("警告")
+                && !result.contains("未修改")
+                && !result.contains("未发生变化")
+                && !lowerResult.contains("failed")
+                && !lowerResult.contains("error")
+                && !lowerResult.contains("warning")
+                && !lowerResult.contains("no change")
+                && !lowerResult.contains("not found");
     }
 
     /**
@@ -829,6 +843,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     log.warn("应用部署状态已变化，跳过更新截图封面，appId: {}, deployKey: {}, versionNo: {}",
                             appId, deployKey, deployedVersionNo);
                 } else {
+                    updateVersionCover(appId, deployedVersionNo, screenshotUrl);
                     deleteAppCoverIfChanged(oldCover, screenshotUrl, appId);
                 }
             } catch (Exception e) {
@@ -868,10 +883,81 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     deleteAppCover(screenshotUrl, appId);
                     log.warn("预览封面更新失败，appId: {}", appId);
                 } else {
+                    updateVersionCover(appId, versionNo, screenshotUrl);
                     deleteAppCoverIfChanged(oldCover, screenshotUrl, appId);
                 }
             } catch (Exception e) {
                 log.warn("异步生成预览封面失败，不影响预览结果，appId: {}, url: {}", appId, previewUrl, e);
+            }
+        });
+    }
+
+    /**
+     * 更新指定版本的预览截图，供版本历史缩略图直接复用。
+     */
+    private void updateVersionCover(Long appId, Long versionNo, String coverUrl) {
+        if (appId == null || versionNo == null || StrUtil.isBlank(coverUrl)) {
+            return;
+        }
+        AppVersion version = appVersionService.getByAppIdAndVersionNo(appId, versionNo);
+        if (version == null) {
+            return;
+        }
+        AppVersion updateVersion = new AppVersion();
+        updateVersion.setId(version.getId());
+        updateVersion.setCover(coverUrl);
+        boolean updated = appVersionService.updateById(updateVersion);
+        if (!updated) {
+            log.warn("版本缩略图更新失败，appId: {}, versionNo: {}", appId, versionNo);
+        }
+    }
+
+    /**
+     * 后台补齐旧版本缺失的预览截图；已有 cover 的版本不会重复截图。
+     */
+    private void repairMissingVersionCoversAsync(App app, List<AppVersion> versionList) {
+        if (app == null || CollUtil.isEmpty(versionList)) {
+            return;
+        }
+        List<AppVersion> missingVersions = versionList.stream()
+                .filter(version -> StrUtil.isBlank(version.getCover()))
+                .limit(20)
+                .toList();
+        if (missingVersions.isEmpty() || !versionCoverRepairingApps.add(app.getId())) {
+            return;
+        }
+        Thread.startVirtualThread(() -> {
+            try {
+                for (AppVersion version : missingVersions) {
+                    try {
+                        AppVersion latestVersion = appVersionService.getByAppIdAndVersionNo(
+                                app.getId(), version.getVersionNo());
+                        if (latestVersion == null || StrUtil.isNotBlank(latestVersion.getCover())) {
+                            continue;
+                        }
+                        String previewKey = AppConstant.PREVIEW_KEY_PREFIX + app.getId() + "_v"
+                                + latestVersion.getVersionNo();
+                        syncVersionToDeployDir(latestVersion, previewKey, app.getCodeGenType());
+                        String previewUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, previewKey);
+                        String screenshotUrl = screenshotService.generateAndUploadScreenshot(previewUrl);
+                        if (StrUtil.isBlank(screenshotUrl)) {
+                            continue;
+                        }
+                        updateVersionCover(app.getId(), latestVersion.getVersionNo(), screenshotUrl);
+                        if (Objects.equals(app.getVersionNo(), latestVersion.getVersionNo())) {
+                            UpdateChain.of(getMapper())
+                                    .set("cover", screenshotUrl, true)
+                                    .eq("id", app.getId())
+                                    .eq("versionNo", latestVersion.getVersionNo())
+                                    .update();
+                        }
+                    } catch (Exception e) {
+                        log.warn("补齐版本缩略图失败，appId: {}, versionNo: {}",
+                                app.getId(), version.getVersionNo(), e);
+                    }
+                }
+            } finally {
+                versionCoverRepairingApps.remove(app.getId());
             }
         });
     }
@@ -961,8 +1047,27 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         checkAppAuth(app, loginUser);
 
         List<AppVersion> versionList = appVersionService.listByAppId(appId);
+        syncCurrentVersionCoverFromApp(app, versionList);
+        repairMissingVersionCoversAsync(app, versionList);
 
         return versionList.stream().map(this::toAppVersionVO).toList();
+    }
+
+    /**
+     * 当前应用封面已经生成时，立即复用到当前版本缩略图。
+     */
+    private void syncCurrentVersionCoverFromApp(App app, List<AppVersion> versionList) {
+        if (app == null || CollUtil.isEmpty(versionList) || StrUtil.isBlank(app.getCover())) {
+            return;
+        }
+        versionList.stream()
+                .filter(version -> Objects.equals(version.getVersionNo(), app.getVersionNo()))
+                .filter(version -> StrUtil.isBlank(version.getCover()))
+                .findFirst()
+                .ifPresent(version -> {
+                    version.setCover(app.getCover());
+                    updateVersionCover(app.getId(), version.getVersionNo(), app.getCover());
+                });
     }
 
     /**
@@ -1294,9 +1399,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                         app.getCodeGenType() + "_" + appId));
             }
             if (app != null) {
-                deleteAppCover(app.getCover(), appId);
                 deleteDeployDir(app.getDeployKey());
             }
+            deleteAllAppCovers(app, appId);
             deleteDeployDir(AppConstant.PREVIEW_KEY_PREFIX + appId);
             File deployRoot = new File(AppConstant.CODE_DEPLOY_ROOT_DIR);
             File[] versionPreviewDirs = deployRoot.listFiles(file ->
@@ -1318,7 +1423,33 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (StrUtil.isBlank(oldCover) || Objects.equals(oldCover, newCover)) {
             return;
         }
+        long versionUseCount = appVersionService.count(QueryWrapper.create()
+                .eq("appId", appId)
+                .eq("cover", oldCover)
+                .eq("isDelete", 0));
+        if (versionUseCount > 0) {
+            return;
+        }
         deleteAppCover(oldCover, appId);
+    }
+
+    /**
+     * 删除应用封面和所有历史版本缩略图。
+     */
+    private void deleteAllAppCovers(App app, Long appId) {
+        if (appId == null || appId <= 0) {
+            return;
+        }
+        Set<String> coverUrls = appVersionService.listByAppId(appId).stream()
+                .map(AppVersion::getCover)
+                .filter(StrUtil::isNotBlank)
+                .collect(Collectors.toSet());
+        if (app != null && StrUtil.isNotBlank(app.getCover())) {
+            coverUrls.add(app.getCover());
+        }
+        for (String coverUrl : coverUrls) {
+            deleteAppCover(coverUrl, appId);
+        }
     }
 
     /**
