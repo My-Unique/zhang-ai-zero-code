@@ -1,11 +1,13 @@
 package com.unique.zhangaizerocode.core.handler;
 
 import cn.hutool.json.JSONUtil;
+import com.unique.zhangaizerocode.ai.tools.ToolManager;
 import com.unique.zhangaizerocode.model.entity.User;
 import com.unique.zhangaizerocode.model.enums.ChatHistoryMessageTypeEnum;
 import com.unique.zhangaizerocode.service.ChatHistoryService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
@@ -19,7 +21,7 @@ class JsonMessageStreamHandlerTest {
 
     @Test
     void shouldRenderToolCallsAsMarkdownWithoutRepeatedGeneratingText() {
-        JsonMessageStreamHandler handler = new JsonMessageStreamHandler();
+        JsonMessageStreamHandler handler = handlerWithTools();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         User loginUser = new User();
         loginUser.setId(1L);
@@ -37,6 +39,7 @@ class JsonMessageStreamHandlerTest {
                 ),
                 chatHistoryService,
                 123L,
+                1L,
                 loginUser
         ).collectList().block());
 
@@ -66,7 +69,7 @@ class JsonMessageStreamHandlerTest {
 
     @Test
     void shouldStartWritingStatusOnNewLineAfterToolPromptText() {
-        JsonMessageStreamHandler handler = new JsonMessageStreamHandler();
+        JsonMessageStreamHandler handler = handlerWithTools();
         ChatHistoryService chatHistoryService = mock(ChatHistoryService.class);
         User loginUser = new User();
         loginUser.setId(1L);
@@ -79,6 +82,7 @@ class JsonMessageStreamHandlerTest {
                 ),
                 chatHistoryService,
                 123L,
+                1L,
                 loginUser
         ).collectList().block());
 
@@ -94,6 +98,13 @@ class JsonMessageStreamHandlerTest {
         assertThat(savedMessageCaptor.getValue()).contains("[工具调用] 写入文件 src/App.vue\n[正在编写] src/App.vue");
     }
 
+    private static JsonMessageStreamHandler handlerWithTools() {
+        JsonMessageStreamHandler handler = new JsonMessageStreamHandler();
+        ToolManager toolManager = new ToolManager();
+        toolManager.afterPropertiesSet();
+        ReflectionTestUtils.setField(handler, "toolManager", toolManager);
+        return handler;
+    }
     private static String aiResponse(String data) {
         return JSONUtil.toJsonStr(Map.of(
                 "type", "ai_response",

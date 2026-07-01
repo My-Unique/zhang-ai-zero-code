@@ -110,16 +110,70 @@ public class JsonMessageStreamHandler {
         if (StrUtil.isBlank(toolKey) || seenToolIds.contains(toolKey)) {
             return "";
         }
-        seenToolIds.add(toolKey);
 
         BaseTool tool = toolManager.getTool(toolName);
         if (tool == null) {
             log.warn("未找到工具实例，toolName: {}", toolName);
             return "";
         }
-        String output = tool.generateToolRequestResponse();
+        String output = buildToolRequestOutput(toolRequestMessage, tool);
+        if (StrUtil.isBlank(output)) {
+            return "";
+        }
+        seenToolIds.add(toolKey);
         chatHistoryStringBuilder.append(output);
         return output;
+    }
+
+    private String buildToolRequestOutput(ToolRequestMessage toolRequestMessage, BaseTool tool) {
+        /*
+         * 文件变更工具（writeFile / modifyFile / deleteFile）必须能提取到相对路径才输出。
+         *
+         * 流式调用时，onPartialToolExecutionRequest 的参数是逐步累积的，
+         * 前几帧可能因为 JSON 不完整而导致 extractRelativeFilePath 返回空。
+         * 此时返回空字符串，handleToolRequest 不会将其加入 seenToolIds，
+         * 后续参数完整的帧仍有机会展示 "[正在编写] xxx.vue"。
+         *
+         * 非文件变更工具（readFile / readDir）没有相对路径可提取，
+         * 直接使用泛用响应即可。
+         */
+        if (isFileMutationTool(toolRequestMessage.getName())) {
+            String relativeFilePath = extractRelativeFilePath(toolRequestMessage.getArguments());
+            if (StrUtil.isNotBlank(relativeFilePath)) {
+                return String.format("\n[正在编写] %s\n", relativeFilePath);
+            }
+            return "";
+        }
+        return tool.generateToolRequestResponse();
+    }
+
+    /**
+     * 从工具调用参数中提取 relativeFilePath。
+     *
+     * 使用正则直接匹配 {@code "relativeFilePath":"xxx"}，不依赖完整 JSON 解析。
+     * 原因是流式调用时参数是逐步累积的，即使累积到以 "}" 结尾也不代表 JSON 完整
+     * —— content 字段内可能包含 Vue 模板中的 "}" 字符，导致 JSON 解析器报
+     * "Unterminated string" 等不可恢复的错误。
+     *
+     * relativeFilePath 的值是简单文件路径（如 src/App.vue），不包含转义引号，
+     * 在整个参数 JSON 中最早完成累积，正则提取完全可靠。
+     */
+    private static final java.util.regex.Pattern RELATIVE_FILE_PATH_PATTERN =
+            java.util.regex.Pattern.compile("\"relativeFilePath\"\\s*:\\s*\"([^\"]*)\"");
+
+    private String extractRelativeFilePath(String arguments) {
+        if (StrUtil.isBlank(arguments)) {
+            return "";
+        }
+        java.util.regex.Matcher matcher = RELATIVE_FILE_PATH_PATTERN.matcher(arguments);
+        if (matcher.find()) {
+            return StrUtil.blankToDefault(matcher.group(1), "");
+        }
+        return "";
+    }
+
+    private boolean isFileMutationTool(String toolName) {
+        return Set.of("writeFile", "modifyFile", "deleteFile").contains(toolName);
     }
 
     private List<String> handleToolExecuted(String chunk,

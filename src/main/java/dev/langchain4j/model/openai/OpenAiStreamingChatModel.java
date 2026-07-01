@@ -203,7 +203,7 @@ public class OpenAiStreamingChatModel implements StreamingChatModel {
                     ToolExecutionRequest partialToolExecutionRequest = ToolExecutionRequest.builder()
                             .id(id)
                             .name(name)
-                            .arguments(partialArguments)
+                            .arguments(toolBuilder.accumulatedArguments())
                             .build();
                     try {
                         handler.onPartialToolExecutionRequest(index, partialToolExecutionRequest);

@@ -21,6 +21,14 @@ public class ToolExecutionRequestBuilder {
     private final AtomicReference<String> name = new AtomicReference<>();
     private final StringBuffer arguments = new StringBuffer();
 
+    /**
+     * 获取当前已累积的参数字符串（不重置状态）。
+     * 用于流式调用时获取完整的增量参数，而非单个 delta 片段。
+     */
+    public String accumulatedArguments() {
+        return arguments.toString();
+    }
+
     private final List<ToolExecutionRequest> allToolExecutionRequests = new ArrayList<>();
 
     public ToolExecutionRequestBuilder() {

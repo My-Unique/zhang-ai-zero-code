@@ -336,7 +336,27 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 .concatWith(Mono.fromCallable(() -> {
                     log.info("AI 代码生成流完成，开始校验并保存版本，appId: {}, versionNo: {}, codePath: {}",
                             appId, newVersionNo, codePath);
-                    validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, mutationToolExecutionCount.get());
+                    int mutationCount = mutationToolExecutionCount.get();
+                    /*
+                     * AI 本轮没有执行任何文件变更工具时有两种情况：
+                     * 1. 正常追问 —— AI 需要用户澄清需求，不应报错；
+                     * 2. 异常静默失败 —— AI 输出了“已完成”之类的文字但没有真正改代码。
+                     *
+                     * 对于情况 1，跳过版本保存、清理空目录、恢复生成状态即可。
+                     * 对于情况 2，之前会因为 mutationToolExecutionCount <= 0 抛出异常，
+                     * 但异常文案对情况 1 用户来说非常困惑（“生成失败，本轮没有执行任何文件写入工具”）。
+                     *
+                     * 现在统一改为：没有文件变更就不保存新版本，前端正常显示 AI 的追问内容，
+                     * 用户可以继续下一轮对话。
+                     */
+                    if (mutationCount <= 0 && CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
+                        log.info("AI 本轮未执行文件变更工具，跳过版本保存，appId: {}, versionNo: {}",
+                                appId, newVersionNo);
+                        cleanupUnusedVersionDirectory(codePath);
+                        updateGenerationStatus(appId, AppGenerationStatusEnum.SUCCEEDED);
+                        return "\n\n[系统] 请根据提示继续补充需求。\n\n";
+                    }
+                    validateGeneratedCodeDirectory(codeGenTypeEnum, codePath, mutationCount);
                     validateGeneratedCodeBuild(codeGenTypeEnum, codePath);
                     saveAppVersionAndUpdateCurrent(
                             appId,
@@ -599,19 +619,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
          */
         if (CodeGenTypeEnum.VUE_PROJECT.equals(codeGenTypeEnum)) {
             /*
-             * 对 Vue 项目来说，目录存在不代表本轮真的改了代码。
-             *
-             * 修改历史版本时，prepareNewVersionDirectory 会先把旧版本完整复制到新版本目录；
-             * 如果模型本轮没有真实调用 writeFile，目录里的文件仍然是旧版本，
-             * 但只检查 package.json / src/App.vue 是否存在会误判为生成成功。
-             *
-             * 所以 Vue 项目必须要求本轮至少执行过一次文件变更工具。
-             * 否则就不保存 app_version，也不更新 app.versionNo，避免出现“说改了但页面没变”的假版本。
+             * mutationToolExecutionCount 的校验已提前到 chatToGenCode 的 concatWith 中。
+             * 此处只负责检查项目核心文件是否完整。
              */
-            ThrowUtils.throwIf(mutationToolExecutionCount <= 0,
-                    ErrorCode.SYSTEM_ERROR,
-                    "Vue 项目生成失败，本轮没有执行任何文件写入、修改或删除工具");
-
             List<String> requiredFiles = List.of(
                     "package.json",
                     "vite.config.js",
@@ -1474,5 +1484,25 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             return;
         }
         FileUtil.del(new File(AppConstant.CODE_DEPLOY_ROOT_DIR, deployKey));
+    }
+
+    /**
+     * 清理未使用的版本目录。
+     * 当 AI 本轮只追问澄清、没有实际修改文件时，prepareNewVersionDirectory 可能已经
+     * 把旧版本复制到了新版本目录，但这个目录不会有任何变更，也不应保存为正式版本。
+     */
+    private void cleanupUnusedVersionDirectory(String codePath) {
+        if (StrUtil.isBlank(codePath)) {
+            return;
+        }
+        try {
+            File dir = new File(codePath);
+            if (dir.exists()) {
+                FileUtil.del(dir);
+                log.info("已清理未使用的版本目录: {}", codePath);
+            }
+        } catch (Exception e) {
+            log.warn("清理未使用的版本目录失败: {}", codePath, e);
+        }
     }
 }

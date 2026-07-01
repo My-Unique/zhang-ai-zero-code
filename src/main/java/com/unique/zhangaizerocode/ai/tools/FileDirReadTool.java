@@ -72,10 +72,12 @@ public class FileDirReadTool extends BaseTool {
             if (!targetDir.exists() || !targetDir.isDirectory()) {
                 return "错误：目录不存在或不是目录 - " + relativeDirPath;
             }
+            Path rootPath = targetDir.toPath().toAbsolutePath().normalize();
             StringBuilder structure = new StringBuilder();
             structure.append("项目目录结构:\n");
-            // 使用 Hutool 递归获取所有文件
-            List<File> allFiles = FileUtil.loopFiles(targetDir, file -> !shouldIgnore(file.getName()));
+            // 使用 Hutool 递归获取所有文件，通过路径过滤避免遍历 node_modules 等大目录
+            List<File> allFiles = FileUtil.loopFiles(targetDir,
+                    file -> !shouldIgnore(rootPath, file));
             // 按路径深度和名称排序显示
             allFiles.stream()
                     .sorted((f1, f2) -> {
@@ -110,15 +112,31 @@ public class FileDirReadTool extends BaseTool {
     }
 
     /**
-     * 判断是否应该忽略该文件或目录
+     * 判断是否应该忽略该文件或目录。
+     * 同时检查文件名和完整路径，避免遍历 node_modules 等大型依赖目录。
      */
-    private boolean shouldIgnore(String fileName) {
+    private boolean shouldIgnore(Path rootPath, File file) {
+        String fileName = file.getName();
+
         // 检查是否在忽略名称列表中
         if (IGNORED_NAMES.contains(fileName)) {
             return true;
         }
 
         // 检查文件扩展名
-        return IGNORED_EXTENSIONS.stream().anyMatch(fileName::endsWith);
+        if (IGNORED_EXTENSIONS.stream().anyMatch(fileName::endsWith)) {
+            return true;
+        }
+
+        // 检查路径中是否包含被忽略的目录名（防止遍历 node_modules 等大型目录）
+        Path filePath = file.toPath().toAbsolutePath().normalize();
+        for (int i = 0; i < filePath.getNameCount(); i++) {
+            String segment = filePath.getName(i).toString();
+            if (IGNORED_NAMES.contains(segment)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

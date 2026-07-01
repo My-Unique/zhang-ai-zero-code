@@ -416,16 +416,27 @@ public class AppController {
                         if ("done".equals(event.event())) {
                             return Flux.empty();
                         }
-                        return Flux.just(event.data());
+                        String chunk = event.data();
+                        /*
+                         * generated_file_snapshot 是后端发给前端的结构化事件，
+                         * 用于更新文件树和代码预览，不应混入聊天文本流。
+                         *
+                         * 这里把它作为 SSE 命名事件 "file_snapshot" 单独发送，
+                         * 前端通过 addEventListener('file_snapshot', ...) 监听，
+                         * 不会进入聊天消息的 parseSseChunk 管道。
+                         */
+                        if (isGeneratedFileSnapshot(chunk)) {
+                            return Flux.just(ServerSentEvent.<String>builder()
+                                    .event("file_snapshot")
+                                    .data(chunk)
+                                    .build());
+                        }
+                        Map<String, String> wrapper = Map.of("d", chunk);
+                        String jsonData = JSONUtil.toJsonStr(wrapper);
+                        return Flux.just(ServerSentEvent.<String>builder()
+                                .data(jsonData)
+                                .build());
                     });
-                })
-                .map(chunk -> {
-                    // 将内容包装成JSON对象
-                    Map<String, String> wrapper = Map.of("d", chunk);
-                    String jsonData = JSONUtil.toJsonStr(wrapper);
-                    return ServerSentEvent.<String>builder()
-                            .data(jsonData)
-                            .build();
                 })
                 .concatWith(Flux.just(ServerSentEvent.<String>builder()
                         .event("done")
@@ -501,6 +512,12 @@ public class AppController {
                             .data(jsonData)
                             .build());
                 });
+    }
+
+    private static final String GENERATED_FILE_SNAPSHOT_PREFIX = "{\"type\":\"generated_file_snapshot\"";
+
+    private static boolean isGeneratedFileSnapshot(String chunk) {
+        return chunk != null && chunk.startsWith(GENERATED_FILE_SNAPSHOT_PREFIX);
     }
 
     @PostMapping("/preview")

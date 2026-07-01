@@ -13,7 +13,7 @@
         <pre><code v-html="highlightCode(block.content, block.language)"></code></pre>
       </div>
 
-      <div v-else-if="block.type === 'status'" class="status-block">
+      <div v-else-if="block.type === 'status'" :class="['status-block', statusClass(block.content)]">
         {{ block.content }}
       </div>
 
@@ -117,7 +117,7 @@ const scriptPatterns: HighlightPattern[] = [
   { regex: /`(?:\\[\s\S]|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, className: 'tok-string' },
   {
     regex:
-      /\b(?:import|from|export|default|const|let|var|function|return|if|else|for|while|async|await|class|extends|new|try|catch|finally|throw|typeof|interface|type|enum|public|private|protected|readonly|true|false|null|undefined)\b/g,
+      /\b(?:import|from|export|default|const|let|var|function|return|if|else|for|while|async|await|class|extends|new|try|catch|finally|throw|typeof|interface|type|enum|public|private|protected|readonly|true|false|null|undefined|ref|reactive|computed|watch|watchEffect|onMounted|onUnmounted|onBeforeMount|onBeforeUnmount|onUpdated|onBeforeUpdate|onActivated|onDeactivated|onErrorCaptured|defineProps|defineEmits|defineExpose|withDefaults|provide|inject|useRouter|useRoute|nextTick|toRefs|toRef|shallowRef|triggerRef|customRef|shallowReactive|markRaw|toRaw|isRef|isReactive|isReadonly|isProxy|effectScope|getCurrentScope|onScopeDispose|unref|toValue|maybeRef|maybeRefOrGetter)\b/g,
     className: 'tok-keyword',
   },
   { regex: /\b[A-Z][A-Za-z0-9_]*(?=[<({\s])/g, className: 'tok-type' },
@@ -130,6 +130,10 @@ const htmlPatterns: HighlightPattern[] = [
   { regex: /<\/?[A-Za-z][\w:-]*/g, className: 'tok-tag' },
   { regex: /\b[@:A-Za-z_][\w:.-]*(?=\=)/g, className: 'tok-attr' },
   { regex: /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, className: 'tok-string' },
+  // Vue 模板指令
+  { regex: /\bv-(?:if|else-if|else|for|model|bind|on|show|html|text|once|cloak|pre|memo)\b/g, className: 'tok-directive' },
+  { regex: /@\w+/g, className: 'tok-directive' },
+  { regex: /\{\{|\}\}/g, className: 'tok-interpolation' },
 ]
 
 const cssPatterns: HighlightPattern[] = [
@@ -185,6 +189,14 @@ const isGenerationStatusLine = (line: string) => {
   return statusLinePattern.test(line.trim())
 }
 
+const statusClass = (content: string) => {
+  const text = content.trim()
+  if (/^\[正在编写\]/.test(text)) return 'status-writing'
+  if (/^\[工具调用\]/.test(text)) return 'status-executed'
+  if (/^\[选择工具\]/.test(text)) return 'status-selecting'
+  return ''
+}
+
 const isOnlyGenerationStatusContent = (content: string) => {
   const lines = content
     .replace(/\r\n/g, '\n')
@@ -203,6 +215,26 @@ const appendTextBlock = (result: MessageBlock[], content: string) => {
 
   if (lines.length && lines.every(isGenerationStatusLine)) {
     lines.forEach((line) => result.push({ type: 'status', content: line }))
+    return
+  }
+
+  // 混合内容：将状态行从普通文本中分离，各自使用对应的渲染样式
+  if (lines.some(isGenerationStatusLine)) {
+    let currentTextLines: string[] = []
+    for (const line of lines) {
+      if (isGenerationStatusLine(line)) {
+        if (currentTextLines.length > 0) {
+          result.push({ type: 'text', content: currentTextLines.join('\n') })
+          currentTextLines = []
+        }
+        result.push({ type: 'status', content: line })
+      } else {
+        currentTextLines.push(line)
+      }
+    }
+    if (currentTextLines.length > 0) {
+      result.push({ type: 'text', content: currentTextLines.join('\n') })
+    }
     return
   }
 
@@ -476,6 +508,16 @@ code :deep(.tok-selector) {
   color: #0891b2;
 }
 
+code :deep(.tok-directive) {
+  color: #0891b2;
+  font-weight: 500;
+}
+
+code :deep(.tok-interpolation) {
+  color: #d97706;
+  font-weight: 600;
+}
+
 pre::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -491,6 +533,7 @@ pre::-webkit-scrollbar-track {
   background: #f1f3f7;
 }
 
+/* 默认状态块：紫色（选择工具） */
 .status-block {
   display: flex;
   align-items: center;
@@ -512,6 +555,53 @@ pre::-webkit-scrollbar-track {
   background: #6f63f6;
   box-shadow: 0 0 0 3px rgb(111 99 246 / 12%);
   content: '';
+}
+
+/* [选择工具] — 蓝色：AI 正在选择将要使用的工具 */
+.status-selecting {
+  color: #3b5998;
+  border-color: #d6e4ff;
+  background: #f0f5ff;
+}
+
+.status-selecting::before {
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 14%);
+}
+
+/* [正在编写] — 琥珀色：AI 正在将代码写入文件 */
+.status-writing {
+  color: #92400e;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.status-writing::before {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgb(245 158 11 / 14%);
+  animation: status-pulse 1.6s ease-in-out infinite;
+}
+
+/* [工具调用] — 翠绿色：工具已执行完成 */
+.status-executed {
+  color: #065f46;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.status-executed::before {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgb(16 185 129 / 14%);
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgb(245 158 11 / 14%);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(245 158 11 / 6%);
+  }
 }
 
 .summary-block {

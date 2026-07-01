@@ -44,11 +44,11 @@ public class FileWriteTool extends BaseTool {
         String suffix = FileUtil.getSuffix(relativeFilePath);
         String content = arguments.getStr("content");
         return String.format("""
-                        [工具调用] %s %s
+                        [工具调用] 写入完成 %s
                         ```%s
                         %s
                         ```
-                        """, getDisplayName(), relativeFilePath, suffix, content);
+                        """, relativeFilePath, suffix, content);
     }
 
     @Tool("写入文件到指定路径")
@@ -129,7 +129,28 @@ public class FileWriteTool extends BaseTool {
                 || lowerContent.contains("<body")
                 || lowerContent.contains("<script")
                 || lowerContent.contains("<style")
-                || lowerContent.contains("<div");
+                || lowerContent.contains("<div")
+                || lowerContent.contains("<p")
+                || lowerContent.contains("<span")
+                || lowerContent.contains("<h1")
+                || lowerContent.contains("<h2")
+                || lowerContent.contains("<h3")
+                || lowerContent.contains("<img")
+                || lowerContent.contains("<a ")
+                || lowerContent.contains("<ul>")
+                || lowerContent.contains("<ol>")
+                || lowerContent.contains("<li>")
+                || lowerContent.contains("<table")
+                || lowerContent.contains("<form")
+                || lowerContent.contains("<input")
+                || lowerContent.contains("<button")
+                || lowerContent.contains("<section")
+                || lowerContent.contains("<article")
+                || lowerContent.contains("<nav>")
+                || lowerContent.contains("<header")
+                || lowerContent.contains("<footer")
+                || lowerContent.contains("<main>")
+                || lowerContent.contains("<svg");
     }
 
     private boolean looksLikeVueSource(String lowerContent) {

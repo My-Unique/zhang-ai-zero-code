@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Slf4j
 
+@Disabled("Disabled by default because it opens a real browser and external website.")
 public class WebScreenshotUtilsTest {
 
     @Test

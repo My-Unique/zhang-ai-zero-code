@@ -1795,6 +1795,18 @@ const bindGenerationEventSource = (url: string, aiMessage: ChatMessage) => {
     }
   }
   eventSource.onmessage = handleStreamMessage
+  eventSource.addEventListener('file_snapshot', (event) => {
+    if (event instanceof MessageEvent && event.data) {
+      try {
+        const snapshot = JSON.parse(event.data)
+        if (snapshot && snapshot.type === 'generated_file_snapshot') {
+          applyGeneratedFileSnapshot(snapshot as GeneratedFileSnapshot)
+        }
+      } catch {
+        // snapshot parse failure is non-fatal
+      }
+    }
+  })
   eventSource.addEventListener('snapshot', (event) => {
     if (event instanceof MessageEvent) {
       handleStreamMessage(event, true)

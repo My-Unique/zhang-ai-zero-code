@@ -26,7 +26,7 @@ public class ReasoningStreamingChatModelConfig {
 //        final int maxTokens = 32768;
         // 生产环境使用：
          final String modelName = "deepseek-v4-flash";
-         final int maxTokens = 32768;
+         final int maxTokens = 65536;
         return OpenAiStreamingChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
